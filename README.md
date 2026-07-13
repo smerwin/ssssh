@@ -15,6 +15,21 @@ Three things, done well:
 Everything else (SFTP browsing, port forwarding, Mosh, config sync) is
 explicitly out of scope for v1. This is a terminal, not an IDE.
 
+## License
+
+This source is available under the [PolyForm Noncommercial License
+1.0.0](LICENSE.md): you're free to clone it, read it, compile it, run it,
+and modify it for any noncommercial purpose (personal use, learning,
+contributing back) at no cost. Any commercial use -- reselling it,
+distributing your own build, running it as part of a paid product or
+service -- isn't covered by this license and needs permission from the
+author. The official build on the App Store is sold separately by the
+author, who as copyright holder isn't bound by the license granted to
+everyone else.
+
+SwiftTerm and Citadel, the two dependencies this app is built on, are both
+MIT-licensed; their required notices are preserved in [NOTICE.md](NOTICE.md).
+
 ## Platform
 
 - iOS 17 / iPadOS 17+, SwiftUI, Swift 6 language mode.
