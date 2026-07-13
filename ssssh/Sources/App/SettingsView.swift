@@ -1,7 +1,8 @@
 import SwiftUI
 
 struct SettingsView: View {
-    @AppStorage("terminalTheme") private var themeRawValue = TerminalTheme.crtGreen.rawValue
+    @AppStorage(AppSettingsKeys.terminalTheme) private var themeRawValue = TerminalTheme.crtGreen.rawValue
+    @AppStorage(AppSettingsKeys.autoReconnect) private var autoReconnect = true
 
     var body: some View {
         NavigationStack {
@@ -15,6 +16,11 @@ struct SettingsView: View {
                         EmptyView()
                     }
                     .pickerStyle(.inline)
+                }
+                Section {
+                    Toggle("Auto-Reconnect", isOn: $autoReconnect)
+                } footer: {
+                    Text("When a session drops unexpectedly, automatically reconnect it. When off, dropped sessions are closed instead.")
                 }
             }
             .navigationTitle("Settings")

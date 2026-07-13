@@ -67,14 +67,55 @@ final class SSHConnection: Identifiable, Hashable, @unchecked Sendable {
     /// view is attached is dropped (the session itself keeps running).
     var onOutput: (([UInt8]) -> Void)?
 
+    /// Called when the session ends for any reason *other* than an
+    /// explicit `disconnect()` call -- a network drop, the remote server
+    /// closing the connection, auth failure, etc. `SessionManager` uses
+    /// this to either reconnect or tear the session down entirely,
+    /// depending on the auto-reconnect setting. Never fired for a
+    /// user-initiated close (see `userInitiatedClose`).
+    var onDrop: (() -> Void)?
+
     private let network = SSHNetworkState()
+    private var userInitiatedClose = false
+
+    /// Consecutive unexpected drops since the last successful connect,
+    /// used to space out auto-reconnect attempts (`reconnectWithBackoff`)
+    /// so a persistently broken host (revoked key, unreachable network)
+    /// doesn't get hammered at full speed forever. Reset to 0 on connect.
+    private var consecutiveFailureCount = 0
+    nonisolated private static let baseReconnectDelay = Duration.seconds(1)
+    nonisolated private static let maxReconnectDelay = Duration.seconds(30)
 
     init(host: SSHHost) {
         self.host = host
     }
 
+    /// Reconnects after an exponentially increasing delay (1s, 2s, 4s, ...
+    /// capped at `maxReconnectDelay`) based on how many unexpected drops
+    /// have happened in a row. Used for auto-reconnect; `connect()` itself
+    /// (manual retry, app-foreground reconnect) stays immediate.
+    func reconnectWithBackoff(keyStore: KeyStore, hostKeyStore: HostKeyStore) {
+        let delay = Self.backoffDelay(forFailureCount: consecutiveFailureCount)
+        consecutiveFailureCount += 1
+        Task {
+            try? await Task.sleep(for: delay)
+            // Don't revive a session the user explicitly closed while
+            // this reconnect attempt was still waiting out its delay.
+            guard !self.userInitiatedClose else { return }
+            self.connect(keyStore: keyStore, hostKeyStore: hostKeyStore)
+        }
+    }
+
+    nonisolated private static func backoffDelay(forFailureCount count: Int) -> Duration {
+        let cappedExponent = min(count, 5) // 1,2,4,8,16,32s -> then capped at 30s anyway
+        let base = Int(baseReconnectDelay.components.seconds)
+        let seconds = min(base << cappedExponent, Int(maxReconnectDelay.components.seconds))
+        return .seconds(seconds)
+    }
+
     func connect(keyStore: KeyStore, hostKeyStore: HostKeyStore) {
         guard network.client == nil else { return }
+        userInitiatedClose = false
         state = .connecting
 
         guard let keyID = host.keyID, let key = keyStore.keys.first(where: { $0.id == keyID }) else {
@@ -106,6 +147,22 @@ final class SSHConnection: Identifiable, Hashable, @unchecked Sendable {
         hostKeyStore: HostKeyStore,
         network: SSHNetworkState
     ) async {
+        // Clears the (now-dead) client/writer so a later `connect()` --
+        // whether from auto-reconnect or the user retrying -- isn't
+        // blocked by `connect()`'s `network.client == nil` guard, then
+        // publishes the final state and fires `onDrop` unless this was an
+        // explicit `disconnect()`.
+        func finish(_ newState: State) async {
+            network.client = nil
+            network.writer = nil
+            await MainActor.run {
+                self.state = newState
+                if !self.userInitiatedClose {
+                    self.onDrop?()
+                }
+            }
+        }
+
         do {
             let auth = Self.makeAuthenticationMethod(username: host.username, material: material)
             let validator = SSHHostKeyValidator.tofu(host: host, hostKeyStore: hostKeyStore)
@@ -118,7 +175,10 @@ final class SSHConnection: Identifiable, Hashable, @unchecked Sendable {
                 reconnect: .never
             )
             network.client = client
-            await MainActor.run { self.state = .connected }
+            await MainActor.run {
+                self.state = .connected
+                self.consecutiveFailureCount = 0
+            }
 
             let ptyRequest = SSHChannelRequestEvent.PseudoTerminalRequest(
                 wantReply: true,
@@ -144,7 +204,7 @@ final class SSHConnection: Identifiable, Hashable, @unchecked Sendable {
                         }
                     }
                 }
-                await MainActor.run { self.state = .disconnected }
+                await finish(.disconnected)
             } catch let error as NIO.ChannelError where error == .alreadyClosed {
                 // Citadel's withPTY tries to close the channel again on the
                 // way out; if the remote end already hung up (e.g. the user
@@ -152,12 +212,12 @@ final class SSHConnection: Identifiable, Hashable, @unchecked Sendable {
                 // real failure -- verified against a real server where the
                 // PTY session completed successfully and only the trailing
                 // close-after-close raised this.
-                await MainActor.run { self.state = .disconnected }
+                await finish(.disconnected)
             } catch {
-                await MainActor.run { self.state = .failed(Self.describe(error)) }
+                await finish(.failed(Self.describe(error)))
             }
         } catch {
-            await MainActor.run { self.state = .failed(Self.describe(error)) }
+            await finish(.failed(Self.describe(error)))
         }
     }
 
@@ -173,6 +233,8 @@ final class SSHConnection: Identifiable, Hashable, @unchecked Sendable {
     }
 
     func disconnect() {
+        userInitiatedClose = true
+        consecutiveFailureCount = 0
         let client = network.client
         network.client = nil
         network.writer = nil

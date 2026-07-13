@@ -29,6 +29,7 @@
 		7CF897499628942477EF597F /* KeyDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 11030446A2958F1F5044A3B8 /* KeyDetailView.swift */; };
 		7EA6B690FF1844EDB40F1B0A /* HostEditView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0E7170262F37D3FABAD327E7 /* HostEditView.swift */; };
 		7F4CE2D2B6C662A7D9759A81 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 74058F678E0956FA4C650783 /* SettingsView.swift */; };
+		87FB5BD239F1120B1CC8A8DA /* AppSettingsKeys.swift in Sources */ = {isa = PBXBuildFile; fileRef = CE3CF99BEBF0D573758A664D /* AppSettingsKeys.swift */; };
 		893B07B57373C98FBCE41378 /* SessionManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 68C6B93C6C12C898870F2F73 /* SessionManager.swift */; };
 		964627D0EEDBA09475E66146 /* KeyListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D17F6968593C6CDF7F4CFB1B /* KeyListView.swift */; };
 		96DFAD0C51D5FFF184B1CAC9 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 70AA67ED7118641856172029 /* ContentView.swift */; };
@@ -77,6 +78,7 @@
 		BFC7605273F3C9662BBBFA0F /* HostKeyConfirmationView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostKeyConfirmationView.swift; sourceTree = "<group>"; };
 		C6F1F3497C6EAE8353915767 /* SSHConnection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SSHConnection.swift; sourceTree = "<group>"; };
 		CA60E549D7F68D1D9CC615CD /* HostKeyFingerprint.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostKeyFingerprint.swift; sourceTree = "<group>"; };
+		CE3CF99BEBF0D573758A664D /* AppSettingsKeys.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppSettingsKeys.swift; sourceTree = "<group>"; };
 		D17F6968593C6CDF7F4CFB1B /* KeyListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyListView.swift; sourceTree = "<group>"; };
 		D2D93910C2DC860311054A08 /* TOFUHostKeyValidator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TOFUHostKeyValidator.swift; sourceTree = "<group>"; };
 		DB5762D5CFBEF2BCFFBA74A2 /* TerminalTheme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalTheme.swift; sourceTree = "<group>"; };
@@ -168,6 +170,7 @@
 		B1924B24AFC04F841408CA3E /* App */ = {
 			isa = PBXGroup;
 			children = (
+				CE3CF99BEBF0D573758A664D /* AppSettingsKeys.swift */,
 				70AA67ED7118641856172029 /* ContentView.swift */,
 				72B2BCF32B9D9DD901992B68 /* Info.plist */,
 				74058F678E0956FA4C650783 /* SettingsView.swift */,
@@ -331,6 +334,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				87FB5BD239F1120B1CC8A8DA /* AppSettingsKeys.swift in Sources */,
 				5CCD10760C3D7EE392D7F972 /* CitadelSendability.swift in Sources */,
 				96DFAD0C51D5FFF184B1CAC9 /* ContentView.swift in Sources */,
 				E2F40DB983550B8F30D0236E /* CopyKeyToServerView.swift in Sources */,

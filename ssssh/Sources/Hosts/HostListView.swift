@@ -2,7 +2,6 @@ import SwiftUI
 
 struct HostListView: View {
     @Environment(HostStore.self) private var hostStore
-    @Environment(KeyStore.self) private var keyStore
     @Environment(HostKeyStore.self) private var hostKeyStore
     @Environment(SessionManager.self) private var sessionManager
 
@@ -70,7 +69,7 @@ struct HostListView: View {
             }
             .navigationTitle("Hosts")
             .navigationDestination(for: SSHHost.self) { host in
-                TerminalSessionView(connection: sessionManager.session(for: host, keyStore: keyStore, hostKeyStore: hostKeyStore))
+                TerminalSessionView(connection: sessionManager.session(for: host))
             }
             .toolbar {
                 ToolbarItem(placement: .primaryAction) {
@@ -95,9 +94,11 @@ struct HostListView: View {
 }
 
 #Preview {
+    let keyStore = KeyStore()
+    let hostKeyStore = HostKeyStore()
     HostListView()
         .environment(HostStore())
-        .environment(KeyStore())
-        .environment(HostKeyStore())
-        .environment(SessionManager())
+        .environment(keyStore)
+        .environment(hostKeyStore)
+        .environment(SessionManager(keyStore: keyStore, hostKeyStore: hostKeyStore))
 }

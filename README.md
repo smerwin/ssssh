@@ -74,7 +74,17 @@ explicitly out of scope for v1. This is a terminal, not an IDE.
 - Sessions persist independent of navigation: `SessionManager` keeps one
   `SSHConnection` per host alive regardless of which view is on screen, and
   reconnects any dropped session when the app returns to the foreground
-  (`scenePhase` -> `.active`).
+  (`scenePhase` -> `.active`) regardless of the Auto-Reconnect setting below
+  -- the user foregrounding the app is itself a signal they want back in.
+- **Auto-Reconnect** (Settings, on by default): when a session drops
+  unexpectedly (network blip, remote hangup, auth failure) while the app is
+  already in the foreground, it's automatically reconnected with
+  exponential backoff (1s, 2s, 4s, ... capped at 30s, reset after a
+  successful connect) if this is on; if it's off, the dropped session is
+  torn down and removed from the Sessions list instead of lingering in a
+  disconnected state. There's no hard retry *limit* -- a persistently
+  broken host (revoked key, permanently unreachable) will keep retrying
+  forever, just slowly, rather than eventually giving up.
 
 ### 4. Hosts and connections
 
