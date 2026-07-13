@@ -185,7 +185,23 @@ final class SSHConnection: Identifiable, Hashable, @unchecked Sendable {
             }
         }
 
+        // Citadel/NIOSSH don't log the handshake internals at all (no key
+        // exchange, algorithm negotiation, or auth-attempt logging exists
+        // to tap into), so this can't show real protocol-level detail the
+        // way `ssh -v` does. Instead it narrates the lifecycle steps we do
+        // control, in the same "debug1:"-prefixed style, fed through
+        // `onOutput` so it appears as regular terminal scrollback -- on by
+        // default (Settings > Verbose Connecting), matching how `ssh -v`
+        // always writes to the same terminal rather than a separate log
+        // view.
+        func emitDiagnostic(_ line: String) async {
+            guard UserDefaults.standard.verboseConnectingEnabled else { return }
+            await MainActor.run { self.onOutput?(Array((line + "\r\n").utf8)) }
+        }
+
         do {
+            await emitDiagnostic("debug1: Connecting to \(host.hostname) port \(host.port).")
+
             let auth = Self.makeAuthenticationMethod(username: host.username, material: material)
             let validator = SSHHostKeyValidator.tofu(host: host, hostKeyStore: hostKeyStore)
 
@@ -197,6 +213,7 @@ final class SSHConnection: Identifiable, Hashable, @unchecked Sendable {
                 reconnect: .never
             )
             network.client = client
+            await emitDiagnostic("debug1: Authentication succeeded (\(Self.algorithmDescription(for: material))) for user '\(host.username)'.")
             await MainActor.run {
                 self.state = .connected
                 self.consecutiveFailureCount = 0
@@ -211,6 +228,7 @@ final class SSHConnection: Identifiable, Hashable, @unchecked Sendable {
                 terminalPixelHeight: 0,
                 terminalModes: SSHTerminalModes([:])
             )
+            await emitDiagnostic("debug1: Requesting pty (xterm-256color, 80x24).")
 
             do {
                 try await client.withPTY(ptyRequest) { inbound, outbound in
@@ -237,10 +255,14 @@ final class SSHConnection: Identifiable, Hashable, @unchecked Sendable {
                 // case above: no auto-reconnect.
                 await finishCleanly()
             } catch {
-                await finishWithDrop(.failed(Self.describe(error)))
+                let message = Self.describe(error)
+                await emitDiagnostic("debug1: \(message)")
+                await finishWithDrop(.failed(message))
             }
         } catch {
-            await finishWithDrop(.failed(Self.describe(error)))
+            let message = Self.describe(error)
+            await emitDiagnostic("debug1: \(message)")
+            await finishWithDrop(.failed(message))
         }
     }
 
@@ -276,6 +298,14 @@ final class SSHConnection: Identifiable, Hashable, @unchecked Sendable {
         }
     }
 
+    nonisolated private static func algorithmDescription(for material: SSHPrivateKeyMaterial) -> String {
+        switch material {
+        case .ed25519: return "publickey: ssh-ed25519"
+        case .ecdsaP256: return "publickey: ecdsa-sha2-nistp256"
+        case .ecdsaP384: return "publickey: ecdsa-sha2-nistp384"
+        }
+    }
+
     nonisolated private static func describe(_ error: Error) -> String {
         if error is HostKeyRejected {
             return "Host key was not trusted."
@@ -295,5 +325,13 @@ enum SSHConnectionError: LocalizedError {
         case .noKeyConfigured:
             return "This host has no key configured. Edit the host and choose a key."
         }
+    }
+}
+
+private extension UserDefaults {
+    /// Defaults to `true` (verbose by default, matching `ssh -v`-style
+    /// connecting output) when the user has never touched the setting.
+    var verboseConnectingEnabled: Bool {
+        object(forKey: AppSettingsKeys.verboseConnecting) == nil || bool(forKey: AppSettingsKeys.verboseConnecting)
     }
 }

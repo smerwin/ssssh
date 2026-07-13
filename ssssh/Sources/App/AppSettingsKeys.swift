@@ -7,4 +7,5 @@ import Foundation
 enum AppSettingsKeys {
     static let terminalTheme = "terminalTheme"
     static let autoReconnect = "autoReconnect"
+    static let verboseConnecting = "verboseConnecting"
 }
