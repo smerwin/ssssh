@@ -44,6 +44,7 @@ struct PaywallView: View {
                         subtitle: "Monthly subscription"
                     )
                 }
+                .tint(.blue)
 
                 VStack(spacing: 4) {
                     Text("Support Development renews monthly at \(purchaseManager.monthlyProduct?.displayPrice ?? "$0.99") until canceled. Manage or cancel anytime in Settings > Apple Account > Subscriptions.")
