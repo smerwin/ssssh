@@ -78,8 +78,39 @@ final class SSHConnection: Identifiable, Hashable, @unchecked Sendable {
     private let network = SSHNetworkState()
     private var userInitiatedClose = false
 
+    /// Consecutive unexpected drops since the last successful connect,
+    /// used to space out auto-reconnect attempts (`reconnectWithBackoff`)
+    /// so a persistently broken host (revoked key, unreachable network)
+    /// doesn't get hammered at full speed forever. Reset to 0 on connect.
+    private var consecutiveFailureCount = 0
+    nonisolated private static let baseReconnectDelay = Duration.seconds(1)
+    nonisolated private static let maxReconnectDelay = Duration.seconds(30)
+
     init(host: SSHHost) {
         self.host = host
+    }
+
+    /// Reconnects after an exponentially increasing delay (1s, 2s, 4s, ...
+    /// capped at `maxReconnectDelay`) based on how many unexpected drops
+    /// have happened in a row. Used for auto-reconnect; `connect()` itself
+    /// (manual retry, app-foreground reconnect) stays immediate.
+    func reconnectWithBackoff(keyStore: KeyStore, hostKeyStore: HostKeyStore) {
+        let delay = Self.backoffDelay(forFailureCount: consecutiveFailureCount)
+        consecutiveFailureCount += 1
+        Task {
+            try? await Task.sleep(for: delay)
+            // Don't revive a session the user explicitly closed while
+            // this reconnect attempt was still waiting out its delay.
+            guard !self.userInitiatedClose else { return }
+            self.connect(keyStore: keyStore, hostKeyStore: hostKeyStore)
+        }
+    }
+
+    nonisolated private static func backoffDelay(forFailureCount count: Int) -> Duration {
+        let cappedExponent = min(count, 5) // 1,2,4,8,16,32s -> then capped at 30s anyway
+        let base = Int(baseReconnectDelay.components.seconds)
+        let seconds = min(base << cappedExponent, Int(maxReconnectDelay.components.seconds))
+        return .seconds(seconds)
     }
 
     func connect(keyStore: KeyStore, hostKeyStore: HostKeyStore) {
@@ -144,7 +175,10 @@ final class SSHConnection: Identifiable, Hashable, @unchecked Sendable {
                 reconnect: .never
             )
             network.client = client
-            await MainActor.run { self.state = .connected }
+            await MainActor.run {
+                self.state = .connected
+                self.consecutiveFailureCount = 0
+            }
 
             let ptyRequest = SSHChannelRequestEvent.PseudoTerminalRequest(
                 wantReply: true,
@@ -200,6 +234,7 @@ final class SSHConnection: Identifiable, Hashable, @unchecked Sendable {
 
     func disconnect() {
         userInitiatedClose = true
+        consecutiveFailureCount = 0
         let client = network.client
         network.client = nil
         network.writer = nil

@@ -51,7 +51,7 @@ final class SessionManager {
         connection.onDrop = { [weak self, weak connection] in
             guard let self, let connection else { return }
             if UserDefaults.standard.autoReconnectEnabled {
-                connection.connect(keyStore: self.keyStore, hostKeyStore: self.hostKeyStore)
+                connection.reconnectWithBackoff(keyStore: self.keyStore, hostKeyStore: self.hostKeyStore)
             } else {
                 self.close(connection)
             }
