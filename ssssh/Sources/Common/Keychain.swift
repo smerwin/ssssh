@@ -1,38 +1,67 @@
 import Foundation
+import LocalAuthentication
 import Security
 
 /// Thin wrapper over Keychain Services for storing SSH private key material.
-/// Items are stored `kSecAttrAccessibleWhenUnlockedThisDeviceOnly` and are
-/// never synced to iCloud Keychain.
+/// Items are stored `kSecAttrAccessibleWhenUnlockedThisDeviceOnly`, gated
+/// behind Face ID/Touch ID (falling back to the device passcode) via
+/// `kSecAttrAccessControl`, and are never synced to iCloud Keychain.
 enum Keychain {
-    enum KeychainError: Error {
+    enum KeychainError: LocalizedError {
         case unhandled(OSStatus)
         case itemNotFound
+        case authenticationCanceled
+
+        var errorDescription: String? {
+            switch self {
+            case .unhandled(let status):
+                return (SecCopyErrorMessageString(status, nil) as String?) ?? "Keychain error \(status)."
+            case .itemNotFound:
+                return "The key's private material could not be found in the Keychain."
+            case .authenticationCanceled:
+                return "Authentication was canceled."
+            }
+        }
     }
 
     static func save(tag: String, data: Data) throws {
+        var accessControlError: Unmanaged<CFError>?
+        guard let accessControl = SecAccessControlCreateWithFlags(
+            nil,
+            kSecAttrAccessibleWhenUnlockedThisDeviceOnly,
+            [.biometryCurrentSet, .or, .devicePasscode],
+            &accessControlError
+        ) else {
+            throw KeychainError.unhandled(errSecParam)
+        }
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrAccount as String: tag,
             kSecValueData as String: data,
-            kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlockedThisDeviceOnly
+            kSecAttrAccessControl as String: accessControl
         ]
         SecItemDelete(query as CFDictionary)
         let status = SecItemAdd(query as CFDictionary, nil)
         guard status == errSecSuccess else { throw KeychainError.unhandled(status) }
     }
 
-    static func load(tag: String) throws -> Data {
+    /// Loads `tag`'s data, prompting for Face ID/Touch ID (or the device
+    /// passcode) via `context` -- required because `save` protects the item
+    /// with `kSecAttrAccessControl`.
+    static func load(tag: String, context: LAContext = LAContext()) throws -> Data {
+        context.localizedReason = "authenticate to use this SSH key"
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrAccount as String: tag,
             kSecReturnData as String: true,
-            kSecMatchLimit as String: kSecMatchLimitOne
+            kSecMatchLimit as String: kSecMatchLimitOne,
+            kSecUseAuthenticationContext as String: context
         ]
         var result: AnyObject?
         let status = SecItemCopyMatching(query as CFDictionary, &result)
         guard status == errSecSuccess, let data = result as? Data else {
             if status == errSecItemNotFound { throw KeychainError.itemNotFound }
+            if status == errSecUserCanceled { throw KeychainError.authenticationCanceled }
             throw KeychainError.unhandled(status)
         }
         return data

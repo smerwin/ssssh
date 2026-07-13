@@ -46,9 +46,11 @@ MIT-licensed; their required notices are preserved in [NOTICE.md](NOTICE.md).
 
 - Ed25519 (via `CryptoKit.Curve25519.Signing.PrivateKey`), ECDSA P-256, and
   ECDSA P-384 generation, all on-device. Private key bytes are stored in the
-  Keychain (`kSecAttrAccessibleWhenUnlockedThisDeviceOnly`) and never leave
-  it; `KeyStore` only ever hands out a typed, reconstituted
-  `SSHPrivateKeyMaterial` value to the SSH layer, never raw key bytes.
+  Keychain (`kSecAttrAccessibleWhenUnlockedThisDeviceOnly`), gated behind a
+  Face ID/Touch ID (or device passcode) prompt on every use via
+  `kSecAttrAccessControl`, and never leave the Keychain; `KeyStore` only
+  ever hands out a typed, reconstituted `SSHPrivateKeyMaterial` value to the
+  SSH layer, never raw key bytes.
 - Multiple keys, each with a label, algorithm, creation date, and a list of
   host IDs it's been deployed to (`KeyStore`, `SSHKey`).
 - Public key export via `KeyDetailView`: QR code (CoreImage), copy to
@@ -144,10 +146,6 @@ is solid, but they add real surface area and aren't needed to be useful.
 Things the original spec described that aren't actually implemented yet --
 worth knowing before relying on them:
 
-- **No biometric gate on key use.** Private keys are Keychain-protected
-  (`kSecAttrAccessibleWhenUnlockedThisDeviceOnly`) but there's no
-  `LAContext`/Face ID prompt before a key is used for auth, despite
-  `NSFaceIDUsageDescription` already being in the Info.plist.
 - **No passphrase support** on generated private keys, on top of Keychain
   protection.
 - **No RSA import.** The algorithm case exists in the data model; there's
@@ -232,5 +230,5 @@ Two things worth knowing before touching the project setup:
 - The `ssh-copy-id` flow's password path is the single highest-risk piece of
   code in the app (handles a plaintext credential, however briefly) and
   deserves the most scrutiny/testing.
-- See "Known gaps" for the biometric-gate and passphrase protections the
-  original spec called for but that aren't implemented yet.
+- See "Known gaps" for the passphrase protection the original spec called
+  for but that isn't implemented yet.
