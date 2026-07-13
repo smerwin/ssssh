@@ -165,6 +165,32 @@ Notes if you do this again:
 - Clean up (`docker rm -f`) throwaway containers when done; don't leave
   them running as stray state on the user's Mac.
 
+## Support FAQ
+
+Things that look like ssssh bugs from a screenshot but aren't -- don't "fix"
+these client-side without re-reading this first:
+
+- **A highlighted/reverse-video `%` appears alone on its own line after
+  connecting, or after some command output.** That's zsh's own
+  `PROMPT_EOL_MARK` -- it prints that marker whenever the previous line of
+  output (often sshd's `Last login: ...` banner) didn't end with a
+  trailing newline, so the next prompt visibly starts on a forced fresh
+  line. Every terminal client shows this connecting to a Mac (Terminal.app,
+  iTerm2, etc.) -- it isn't something ssssh is injecting, and trying to
+  detect-and-strip a bare `%` client-side would be guessing at intent and
+  risks eating a real `%` a program actually printed. The real fix is
+  server-side, in the *remote* Mac's `~/.zshrc`: `PROMPT_EOL_MARK=""` (or
+  `unsetopt PROMPT_SP`).
+- **A second `Last login: ...` banner appears mid-line, in the middle of
+  existing scrollback, instead of on its own fresh line.** This is what it
+  looks like when auto-reconnect succeeds: a brand new SSH login happens
+  and the remote shell prints its own new banner, but the terminal
+  **intentionally does not clear or reset** on reconnect -- new output
+  just keeps appending to the existing scrollback in place. This is a
+  deliberate, confirmed decision, not a bug: don't add a `TerminalView`
+  clear/reset call to the reconnect path (`SSHConnection.reconnectWithBackoff`,
+  `connect()`, or `SessionManager`) to "fix" this.
+
 ## Licensing
 
 Source is PolyForm Noncommercial 1.0.0 (see `LICENSE.md`), not an
