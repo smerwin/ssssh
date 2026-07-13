@@ -6,6 +6,7 @@ struct sssshApp: App {
     @State private var keyStore = KeyStore()
     @State private var hostKeyStore = HostKeyStore()
     @State private var sessionManager: SessionManager
+    @State private var terminalViewStore = TerminalViewStore()
     @State private var purchaseManager = PurchaseManager()
 
     init() {
@@ -23,6 +24,7 @@ struct sssshApp: App {
                 .environment(keyStore)
                 .environment(hostKeyStore)
                 .environment(sessionManager)
+                .environment(terminalViewStore)
                 .environment(purchaseManager)
                 .sheet(item: Bindable(hostKeyStore).pendingConfirmation) { pending in
                     HostKeyConfirmationView(pending: pending)

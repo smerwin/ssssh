@@ -6,6 +6,7 @@ import SwiftUI
 /// `SSHConnection` instance held by `SessionManager`.
 struct SessionsListView: View {
     @Environment(SessionManager.self) private var sessionManager
+    @Environment(TerminalViewStore.self) private var terminalViewStore
 
     var body: some View {
         NavigationStack {
@@ -33,6 +34,7 @@ struct SessionsListView: View {
                     .swipeActions(edge: .trailing) {
                         Button(role: .destructive) {
                             sessionManager.close(session)
+                            terminalViewStore.prune(activeIDs: Set(sessionManager.sessions.map(\.id)))
                         } label: {
                             Label("Close", systemImage: "xmark")
                         }
@@ -43,6 +45,12 @@ struct SessionsListView: View {
             .navigationDestination(for: SSHConnection.self) { session in
                 TerminalSessionView(connection: session)
             }
+        }
+        // Also catches sessions closed elsewhere (e.g. an unexpected drop
+        // with auto-reconnect disabled) so that session's terminal view is
+        // freed even when it wasn't closed through this list's swipe action.
+        .onChange(of: sessionManager.sessions) { _, sessions in
+            terminalViewStore.prune(activeIDs: Set(sessions.map(\.id)))
         }
     }
 

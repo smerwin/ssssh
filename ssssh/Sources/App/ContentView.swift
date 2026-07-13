@@ -40,5 +40,6 @@ struct ContentView: View {
         .environment(keyStore)
         .environment(hostKeyStore)
         .environment(SessionManager(keyStore: keyStore, hostKeyStore: hostKeyStore))
+        .environment(TerminalViewStore())
         .environment(PurchaseManager())
 }
