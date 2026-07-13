@@ -62,9 +62,10 @@ final class SSHConnection: Identifiable, Hashable, @unchecked Sendable {
     let host: SSHHost
     private(set) var state: State = .connecting
 
-    /// Set by whichever `TerminalSessionView` is on screen for this
-    /// connection; cleared when it disappears. Output arriving while no
-    /// view is attached is dropped (the session itself keeps running).
+    /// Set once by `TerminalViewStore`'s persistent controller for this
+    /// connection and left wired for as long as the session is open, so
+    /// output arriving while no `TerminalSessionView` is on screen is still
+    /// fed into that session's `SwiftTerm.TerminalView` -- not dropped.
     var onOutput: (([UInt8]) -> Void)?
 
     /// Called for a genuinely *unexpected* end to the session -- a network
