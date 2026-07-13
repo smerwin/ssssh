@@ -66,7 +66,12 @@ struct CopyKeyToServerView: View {
     private func copyKey() async {
         guard let selectedKeyID, let key = keyStore.keys.first(where: { $0.id == selectedKeyID }) else { return }
         isWorking = true
-        defer { isWorking = false }
+        // Clear the plaintext password on every path, not just success --
+        // it shouldn't linger in memory after a failed attempt either.
+        defer {
+            isWorking = false
+            password = ""
+        }
 
         do {
             let material = try keyStore.privateKeyMaterial(for: key)
@@ -83,7 +88,6 @@ struct CopyKeyToServerView: View {
                 updated.keyID = key.id
                 try? hostStore.update(updated)
             }
-            password = ""
             result = .success(())
         } catch {
             result = .failure(error)

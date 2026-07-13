@@ -9,8 +9,6 @@ struct SSHHost: Identifiable, Codable, Hashable {
     var username: String
     var keyID: UUID?
     var startupCommand: String?
-    /// SHA256 fingerprint of the host key accepted on first connect (TOFU).
-    var knownHostFingerprint: String?
 
     init(
         id: UUID = UUID(),
@@ -19,8 +17,7 @@ struct SSHHost: Identifiable, Codable, Hashable {
         port: Int = 22,
         username: String,
         keyID: UUID? = nil,
-        startupCommand: String? = nil,
-        knownHostFingerprint: String? = nil
+        startupCommand: String? = nil
     ) {
         self.id = id
         self.nickname = nickname
@@ -29,6 +26,5 @@ struct SSHHost: Identifiable, Codable, Hashable {
         self.username = username
         self.keyID = keyID
         self.startupCommand = startupCommand
-        self.knownHostFingerprint = knownHostFingerprint
     }
 }
