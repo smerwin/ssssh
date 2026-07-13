@@ -67,7 +67,16 @@ final class SSHConnection: Identifiable, Hashable, @unchecked Sendable {
     /// view is attached is dropped (the session itself keeps running).
     var onOutput: (([UInt8]) -> Void)?
 
+    /// Called when the session ends for any reason *other* than an
+    /// explicit `disconnect()` call -- a network drop, the remote server
+    /// closing the connection, auth failure, etc. `SessionManager` uses
+    /// this to either reconnect or tear the session down entirely,
+    /// depending on the auto-reconnect setting. Never fired for a
+    /// user-initiated close (see `userInitiatedClose`).
+    var onDrop: (() -> Void)?
+
     private let network = SSHNetworkState()
+    private var userInitiatedClose = false
 
     init(host: SSHHost) {
         self.host = host
@@ -75,6 +84,7 @@ final class SSHConnection: Identifiable, Hashable, @unchecked Sendable {
 
     func connect(keyStore: KeyStore, hostKeyStore: HostKeyStore) {
         guard network.client == nil else { return }
+        userInitiatedClose = false
         state = .connecting
 
         guard let keyID = host.keyID, let key = keyStore.keys.first(where: { $0.id == keyID }) else {
@@ -106,6 +116,22 @@ final class SSHConnection: Identifiable, Hashable, @unchecked Sendable {
         hostKeyStore: HostKeyStore,
         network: SSHNetworkState
     ) async {
+        // Clears the (now-dead) client/writer so a later `connect()` --
+        // whether from auto-reconnect or the user retrying -- isn't
+        // blocked by `connect()`'s `network.client == nil` guard, then
+        // publishes the final state and fires `onDrop` unless this was an
+        // explicit `disconnect()`.
+        func finish(_ newState: State) async {
+            network.client = nil
+            network.writer = nil
+            await MainActor.run {
+                self.state = newState
+                if !self.userInitiatedClose {
+                    self.onDrop?()
+                }
+            }
+        }
+
         do {
             let auth = Self.makeAuthenticationMethod(username: host.username, material: material)
             let validator = SSHHostKeyValidator.tofu(host: host, hostKeyStore: hostKeyStore)
@@ -144,7 +170,7 @@ final class SSHConnection: Identifiable, Hashable, @unchecked Sendable {
                         }
                     }
                 }
-                await MainActor.run { self.state = .disconnected }
+                await finish(.disconnected)
             } catch let error as NIO.ChannelError where error == .alreadyClosed {
                 // Citadel's withPTY tries to close the channel again on the
                 // way out; if the remote end already hung up (e.g. the user
@@ -152,12 +178,12 @@ final class SSHConnection: Identifiable, Hashable, @unchecked Sendable {
                 // real failure -- verified against a real server where the
                 // PTY session completed successfully and only the trailing
                 // close-after-close raised this.
-                await MainActor.run { self.state = .disconnected }
+                await finish(.disconnected)
             } catch {
-                await MainActor.run { self.state = .failed(Self.describe(error)) }
+                await finish(.failed(Self.describe(error)))
             }
         } catch {
-            await MainActor.run { self.state = .failed(Self.describe(error)) }
+            await finish(.failed(Self.describe(error)))
         }
     }
 
@@ -173,6 +199,7 @@ final class SSHConnection: Identifiable, Hashable, @unchecked Sendable {
     }
 
     func disconnect() {
+        userInitiatedClose = true
         let client = network.client
         network.client = nil
         network.writer = nil

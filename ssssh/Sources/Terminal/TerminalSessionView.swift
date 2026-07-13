@@ -6,7 +6,7 @@ import SwiftTerm
 /// connection itself is owned by `SessionManager` and outlives this view.
 struct TerminalSessionView: View {
     let connection: SSHConnection
-    @AppStorage("terminalTheme") private var themeRawValue = TerminalTheme.crtGreen.rawValue
+    @AppStorage(AppSettingsKeys.terminalTheme) private var themeRawValue = TerminalTheme.crtGreen.rawValue
 
     private var theme: TerminalTheme {
         TerminalTheme(rawValue: themeRawValue) ?? .crtGreen

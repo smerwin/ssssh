@@ -2,8 +2,6 @@ import SwiftUI
 
 struct ContentView: View {
     @Environment(\.scenePhase) private var scenePhase
-    @Environment(KeyStore.self) private var keyStore
-    @Environment(HostKeyStore.self) private var hostKeyStore
     @Environment(SessionManager.self) private var sessionManager
 
     var body: some View {
@@ -22,16 +20,18 @@ struct ContentView: View {
         }
         .onChange(of: scenePhase) { _, newPhase in
             if newPhase == .active {
-                sessionManager.reconnectIfNeeded(keyStore: keyStore, hostKeyStore: hostKeyStore)
+                sessionManager.reconnectIfNeeded()
             }
         }
     }
 }
 
 #Preview {
+    let keyStore = KeyStore()
+    let hostKeyStore = HostKeyStore()
     ContentView()
         .environment(HostStore())
-        .environment(KeyStore())
-        .environment(HostKeyStore())
-        .environment(SessionManager())
+        .environment(keyStore)
+        .environment(hostKeyStore)
+        .environment(SessionManager(keyStore: keyStore, hostKeyStore: hostKeyStore))
 }
