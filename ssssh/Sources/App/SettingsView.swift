@@ -7,9 +7,12 @@ struct SettingsView: View {
         NavigationStack {
             Form {
                 Section("Terminal Theme") {
-                    Picker("Theme", selection: $themeRawValue) {
-                        Text("Green CRT").tag(TerminalTheme.crtGreen.rawValue)
-                        Text("High Contrast").tag(TerminalTheme.highContrast.rawValue)
+                    Picker(selection: $themeRawValue) {
+                        ForEach(TerminalTheme.allCases, id: \.rawValue) { theme in
+                            Text(theme.displayName).tag(theme.rawValue)
+                        }
+                    } label: {
+                        EmptyView()
                     }
                     .pickerStyle(.inline)
                 }

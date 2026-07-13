@@ -64,9 +64,11 @@ explicitly out of scope for v1. This is a terminal, not an IDE.
 - Verified against a real OpenSSH server (a throwaway Docker container, not
   just unit tests): password auth, key deployment, pubkey auth, and an
   interactive PTY echo all round-tripped correctly end to end.
-- Visual theme: green-on-black CRT look by default, with a subtle scanline
-  overlay (`ScanlineOverlay`) and a high-contrast alternative, toggled from
+- Visual theme: green or amber phosphor CRT looks (both with the subtle
+  `ScanlineOverlay`) plus a plain high-contrast alternative, toggled from
   the Settings tab and persisted via `@AppStorage`.
+- Swipe down on the terminal to dismiss the keyboard and use the freed-up
+  space as a taller terminal; swipe up to bring the keyboard back.
 - Copy/paste and OSC 52 clipboard support come from SwiftTerm's built-in
   defaults, not custom code; rectangular selection isn't implemented.
 - Sessions persist independent of navigation: `SessionManager` keeps one
