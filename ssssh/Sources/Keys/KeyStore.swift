@@ -17,10 +17,7 @@ final class KeyStore {
     }
 
     func generateKey(label: String, algorithm: SSHKeyAlgorithm = .ed25519) throws -> SSHKey {
-        guard algorithm == .ed25519 else {
-            fatalError("Only Ed25519 generation is implemented in this scaffold")
-        }
-        let generated = KeyGenerator.generateEd25519(comment: label)
+        let generated = KeyGenerator.generate(algorithm: algorithm, comment: label)
         let key = SSHKey(
             id: UUID(),
             label: label,
@@ -39,6 +36,22 @@ final class KeyStore {
         try Keychain.delete(tag: key.keychainTag)
         keys.removeAll { $0.id == key.id }
         try save()
+    }
+
+    /// Reconstitutes the private key material for authenticating with `key`.
+    func privateKeyMaterial(for key: SSHKey) throws -> SSHPrivateKeyMaterial {
+        let data = try Keychain.load(tag: key.keychainTag)
+        return try SSHPrivateKeyMaterial(algorithm: key.algorithm, rawRepresentation: data)
+    }
+
+    /// Records that `key` has been deployed to `hostID` (best-effort; used by
+    /// the key detail view and the copy-to-server flow).
+    func markDeployed(_ key: SSHKey, to hostID: UUID) throws {
+        guard let index = keys.firstIndex(where: { $0.id == key.id }) else { return }
+        if !keys[index].deployedHostIDs.contains(hostID) {
+            keys[index].deployedHostIDs.append(hostID)
+            try save()
+        }
     }
 
     private func load() {

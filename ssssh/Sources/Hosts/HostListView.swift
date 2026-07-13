@@ -1,7 +1,14 @@
 import SwiftUI
 
 struct HostListView: View {
-    @State private var hostStore = HostStore()
+    @Environment(HostStore.self) private var hostStore
+    @Environment(KeyStore.self) private var keyStore
+    @Environment(HostKeyStore.self) private var hostKeyStore
+    @Environment(SessionManager.self) private var sessionManager
+
+    @State private var isPresentingAddHost = false
+    @State private var editingHost: SSHHost?
+    @State private var copyKeyHost: SSHHost?
 
     var body: some View {
         NavigationStack {
@@ -22,20 +29,66 @@ struct HostListView: View {
                                 .foregroundStyle(.secondary)
                         }
                     }
+                    .swipeActions(edge: .trailing) {
+                        Button(role: .destructive) {
+                            try? hostStore.delete(host)
+                        } label: {
+                            Label("Delete", systemImage: "trash")
+                        }
+                        Button {
+                            editingHost = host
+                        } label: {
+                            Label("Edit", systemImage: "pencil")
+                        }
+                        .tint(.blue)
+                    }
+                    .contextMenu {
+                        Button {
+                            copyKeyHost = host
+                        } label: {
+                            Label("Copy Key to Server", systemImage: "key")
+                        }
+                        Button {
+                            editingHost = host
+                        } label: {
+                            Label("Edit", systemImage: "pencil")
+                        }
+                        if hostKeyStore.fingerprint(for: host.id) != nil {
+                            Button(role: .destructive) {
+                                hostKeyStore.forget(hostID: host.id)
+                            } label: {
+                                Label("Forget Known Host Key", systemImage: "exclamationmark.triangle")
+                            }
+                        }
+                        Button(role: .destructive) {
+                            try? hostStore.delete(host)
+                        } label: {
+                            Label("Delete", systemImage: "trash")
+                        }
+                    }
                 }
             }
             .navigationTitle("Hosts")
             .navigationDestination(for: SSHHost.self) { host in
-                TerminalSessionView(host: host)
+                TerminalSessionView(connection: sessionManager.session(for: host, keyStore: keyStore, hostKeyStore: hostKeyStore))
             }
             .toolbar {
                 ToolbarItem(placement: .primaryAction) {
                     Button {
-                        // TODO: present add-host sheet (milestone 4)
+                        isPresentingAddHost = true
                     } label: {
                         Label("New Host", systemImage: "plus")
                     }
                 }
+            }
+            .sheet(isPresented: $isPresentingAddHost) {
+                HostEditView()
+            }
+            .sheet(item: $editingHost) { host in
+                HostEditView(existingHost: host)
+            }
+            .sheet(item: $copyKeyHost) { host in
+                CopyKeyToServerView(host: host)
             }
         }
     }
@@ -43,4 +96,8 @@ struct HostListView: View {
 
 #Preview {
     HostListView()
+        .environment(HostStore())
+        .environment(KeyStore())
+        .environment(HostKeyStore())
+        .environment(SessionManager())
 }

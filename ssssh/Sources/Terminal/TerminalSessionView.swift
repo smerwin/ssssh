@@ -1,31 +1,119 @@
 import SwiftUI
 import SwiftTerm
 
-/// UIKit bridge for SwiftTerm's `TerminalView`. Wiring the PTY byte stream
-/// from `SSHClient` into this view (via `TerminalViewDelegate`) is milestone
-/// 2 work ("Connect + terminal") — this scaffold only proves the view mounts.
+/// Hosts a live SSH session in a SwiftTerm `TerminalView`. The view can be
+/// pushed, popped, and pushed again for the same `SSHConnection` -- the
+/// connection itself is owned by `SessionManager` and outlives this view.
 struct TerminalSessionView: View {
-    let host: SSHHost
-    @State private var theme: TerminalTheme = .crtGreen
+    let connection: SSHConnection
+    @AppStorage("terminalTheme") private var themeRawValue = TerminalTheme.crtGreen.rawValue
+
+    private var theme: TerminalTheme {
+        TerminalTheme(rawValue: themeRawValue) ?? .crtGreen
+    }
 
     var body: some View {
-        TerminalHostView(theme: theme)
-            .navigationTitle(host.nickname)
-            .background(theme.background)
-            .ignoresSafeArea(edges: .bottom)
+        ZStack {
+            TerminalHostView(connection: connection, theme: theme)
+                // Only ignore the device's own bottom safe area (home
+                // indicator) so the terminal can extend under it -- but
+                // NOT the keyboard's safe area, which would otherwise let
+                // the software keyboard cover the bottom of the terminal.
+                .ignoresSafeArea(.container, edges: .bottom)
+
+            if theme.showsScanlines {
+                ScanlineOverlay()
+                    .allowsHitTesting(false)
+            }
+
+            switch connection.state {
+            case .connecting:
+                StatusBanner(text: "Connecting…", tint: SwiftUI.Color.secondary)
+            case .failed(let message):
+                StatusBanner(text: message, tint: SwiftUI.Color.red)
+            case .disconnected:
+                StatusBanner(text: "Disconnected", tint: SwiftUI.Color.secondary)
+            case .connected:
+                EmptyView()
+            }
+        }
+        .background(theme.background)
+        .navigationTitle(connection.host.nickname)
+        .navigationBarTitleDisplayMode(.inline)
+    }
+}
+
+private struct StatusBanner: View {
+    let text: String
+    let tint: SwiftUI.Color
+
+    var body: some View {
+        VStack {
+            Text(text)
+                .font(.footnote)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+                .background(.ultraThinMaterial, in: Capsule())
+                .foregroundStyle(tint)
+                .padding(.top, 8)
+            Spacer()
+        }
     }
 }
 
 private struct TerminalHostView: UIViewRepresentable {
+    let connection: SSHConnection
     let theme: TerminalTheme
 
     func makeUIView(context: Context) -> SwiftTerm.TerminalView {
         let view = SwiftTerm.TerminalView(frame: .zero)
-        view.backgroundColor = UIColor(theme.background)
+        view.terminalDelegate = context.coordinator
+        context.coordinator.attach(view: view, connection: connection)
+        applyTheme(to: view)
         return view
     }
 
     func updateUIView(_ uiView: SwiftTerm.TerminalView, context: Context) {
-        // TODO: apply theme colors and feed PTY output once SSHClient exists.
+        applyTheme(to: uiView)
+    }
+
+    private func applyTheme(to view: SwiftTerm.TerminalView) {
+        view.nativeBackgroundColor = UIColor(theme.background)
+        view.nativeForegroundColor = UIColor(theme.foreground)
+    }
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator()
+    }
+
+    final class Coordinator: NSObject, TerminalViewDelegate {
+        private weak var connection: SSHConnection?
+
+        @MainActor
+        func attach(view: SwiftTerm.TerminalView, connection: SSHConnection) {
+            self.connection = connection
+            connection.onOutput = { [weak view] bytes in
+                view?.feed(byteArray: bytes[...])
+            }
+        }
+
+        func send(source: SwiftTerm.TerminalView, data: ArraySlice<UInt8>) {
+            let bytes = Array(data)
+            Task { @MainActor [connection] in
+                connection?.send(bytes)
+            }
+        }
+
+        func sizeChanged(source: SwiftTerm.TerminalView, newCols: Int, newRows: Int) {
+            Task { @MainActor [connection] in
+                connection?.resize(cols: newCols, rows: newRows)
+            }
+        }
+
+        func setTerminalTitle(source: SwiftTerm.TerminalView, title: String) {}
+        func hostCurrentDirectoryUpdate(source: SwiftTerm.TerminalView, directory: String?) {}
+        func scrolled(source: SwiftTerm.TerminalView, position: Double) {}
+        func requestOpenLink(source: SwiftTerm.TerminalView, link: String, params: [String: String]) {}
+        func rangeChanged(source: SwiftTerm.TerminalView, startY: Int, endY: Int) {}
     }
 }
