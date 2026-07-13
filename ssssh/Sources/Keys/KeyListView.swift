@@ -77,10 +77,12 @@ private struct GenerateKeyView: View {
                         #endif
                 }
                 Section("Algorithm") {
-                    Picker("Algorithm", selection: $algorithm) {
+                    Picker(selection: $algorithm) {
                         ForEach([SSHKeyAlgorithm.ed25519, .ecdsaP256, .ecdsaP384], id: \.self) { option in
                             Text(option.displayName).tag(option)
                         }
+                    } label: {
+                        EmptyView()
                     }
                     .pickerStyle(.inline)
                 }
