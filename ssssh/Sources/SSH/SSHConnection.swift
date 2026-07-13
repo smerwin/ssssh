@@ -5,6 +5,25 @@ import NIOSSH
 import Citadel
 import CryptoKit
 
+/// Holds Citadel's non-Sendable networking objects outside of
+/// `SSHConnection`'s `@Observable` storage.
+///
+/// `nonisolated(unsafe)` on an `@Observable`-macro-generated property
+/// doesn't reliably apply to the storage the macro actually synthesizes
+/// (some toolchains warn "has no effect" and still treat it as
+/// actor-isolated, which then fails to compile when it crosses into the
+/// non-isolated `runSession` task). A plain class has no such macro
+/// rewriting, so its stored properties are unambiguously nonisolated.
+/// `@unchecked Sendable` is safe here in practice: writes only ever happen
+/// from the single sequential `runSession` task, and reads come from
+/// short, non-overlapping UI-triggered calls (`send`/`resize`/
+/// `disconnect`) -- a race would at worst see a stale `nil` and no-op,
+/// never corrupt memory.
+private final class SSHNetworkState: @unchecked Sendable {
+    var client: Citadel.SSHClient?
+    var writer: TTYStdinWriter?
+}
+
 /// A single interactive SSH session backed by Citadel, feeding decoded PTY
 /// output to whichever terminal view is currently displaying it.
 ///
@@ -12,8 +31,8 @@ import CryptoKit
 /// mutable state is already serialized onto the main actor. The connection
 /// setup and PTY read loop run in a detached, non-isolated task (Citadel's
 /// own types aren't Sendable-audited), and hop back to the main actor
-/// explicitly whenever they touch `state`, `client`, `writer`, or
-/// `onOutput` -- see `runSession`.
+/// explicitly whenever they touch `state` or `onOutput` -- see
+/// `runSession`.
 @MainActor
 @Observable
 final class SSHConnection: Identifiable, Hashable, @unchecked Sendable {
@@ -48,22 +67,14 @@ final class SSHConnection: Identifiable, Hashable, @unchecked Sendable {
     /// view is attached is dropped (the session itself keeps running).
     var onOutput: (([UInt8]) -> Void)?
 
-    // Citadel's types aren't Sendable-audited, so these can't live in
-    // main-actor-isolated storage without forcing every touch through a
-    // `MainActor.run` hop. They're only ever written from the single
-    // sequential `runSession` task and read from short, non-overlapping
-    // UI-triggered calls (`send`/`resize`/`disconnect`), so unchecked
-    // isolation is safe here in practice: a race would at worst see a
-    // stale `nil` and no-op, never corrupt memory.
-    private nonisolated(unsafe) var client: Citadel.SSHClient?
-    private nonisolated(unsafe) var writer: TTYStdinWriter?
+    private let network = SSHNetworkState()
 
     init(host: SSHHost) {
         self.host = host
     }
 
     func connect(keyStore: KeyStore, hostKeyStore: HostKeyStore) {
-        guard client == nil else { return }
+        guard network.client == nil else { return }
         state = .connecting
 
         guard let keyID = host.keyID, let key = keyStore.keys.first(where: { $0.id == keyID }) else {
@@ -80,9 +91,10 @@ final class SSHConnection: Identifiable, Hashable, @unchecked Sendable {
         }
 
         let host = self.host
+        let network = self.network
 
         Task.detached { [weak self] in
-            await self?.runSession(host: host, material: material, hostKeyStore: hostKeyStore)
+            await self?.runSession(host: host, material: material, hostKeyStore: hostKeyStore, network: network)
         }
     }
 
@@ -91,7 +103,8 @@ final class SSHConnection: Identifiable, Hashable, @unchecked Sendable {
     nonisolated private func runSession(
         host: SSHHost,
         material: SSHPrivateKeyMaterial,
-        hostKeyStore: HostKeyStore
+        hostKeyStore: HostKeyStore,
+        network: SSHNetworkState
     ) async {
         do {
             let auth = Self.makeAuthenticationMethod(username: host.username, material: material)
@@ -104,7 +117,7 @@ final class SSHConnection: Identifiable, Hashable, @unchecked Sendable {
                 hostKeyValidator: validator,
                 reconnect: .never
             )
-            self.client = client
+            network.client = client
             await MainActor.run { self.state = .connected }
 
             let ptyRequest = SSHChannelRequestEvent.PseudoTerminalRequest(
@@ -119,7 +132,7 @@ final class SSHConnection: Identifiable, Hashable, @unchecked Sendable {
 
             do {
                 try await client.withPTY(ptyRequest) { inbound, outbound in
-                    self.writer = outbound
+                    network.writer = outbound
                     if let startupCommand = host.startupCommand, !startupCommand.isEmpty {
                         try? await outbound.write(ByteBuffer(string: startupCommand + "\n"))
                     }
@@ -149,20 +162,20 @@ final class SSHConnection: Identifiable, Hashable, @unchecked Sendable {
     }
 
     func send(_ bytes: [UInt8]) {
-        guard let writer else { return }
+        guard let writer = network.writer else { return }
         let buffer = ByteBuffer(bytes: bytes)
         Task { try? await writer.write(buffer) }
     }
 
     func resize(cols: Int, rows: Int) {
-        guard let writer, cols > 0, rows > 0 else { return }
+        guard let writer = network.writer, cols > 0, rows > 0 else { return }
         Task { try? await writer.changeSize(cols: cols, rows: rows, pixelWidth: 0, pixelHeight: 0) }
     }
 
     func disconnect() {
-        let client = self.client
-        self.client = nil
-        self.writer = nil
+        let client = network.client
+        network.client = nil
+        network.writer = nil
         state = .disconnected
         Task { try? await client?.close() }
     }
