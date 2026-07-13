@@ -67,12 +67,16 @@ final class SSHConnection: Identifiable, Hashable, @unchecked Sendable {
     /// view is attached is dropped (the session itself keeps running).
     var onOutput: (([UInt8]) -> Void)?
 
-    /// Called when the session ends for any reason *other* than an
-    /// explicit `disconnect()` call -- a network drop, the remote server
-    /// closing the connection, auth failure, etc. `SessionManager` uses
-    /// this to either reconnect or tear the session down entirely,
-    /// depending on the auto-reconnect setting. Never fired for a
-    /// user-initiated close (see `userInitiatedClose`).
+    /// Called for a genuinely *unexpected* end to the session -- a network
+    /// drop, the remote server closing the connection, auth failure, etc.
+    /// `SessionManager` uses this to either reconnect or tear the session
+    /// down entirely, depending on the auto-reconnect setting.
+    ///
+    /// Never fired for a user-initiated close (see `userInitiatedClose`),
+    /// nor for a *clean* end to the shell session (the user typed
+    /// `exit`/`logout`, or Ctrl+D) -- see `finishCleanly` in `runSession`.
+    /// Auto-reconnecting the instant someone deliberately logs out would
+    /// be exactly the wrong behavior.
     var onDrop: (() -> Void)?
 
     private let network = SSHNetworkState()
@@ -149,12 +153,30 @@ final class SSHConnection: Identifiable, Hashable, @unchecked Sendable {
     ) async {
         // Clears the (now-dead) client/writer so a later `connect()` --
         // whether from auto-reconnect or the user retrying -- isn't
-        // blocked by `connect()`'s `network.client == nil` guard, then
-        // publishes the final state and fires `onDrop` unless this was an
-        // explicit `disconnect()`.
-        func finish(_ newState: State) async {
+        // blocked by `connect()`'s `network.client == nil` guard.
+        func clearNetworkState() {
             network.client = nil
             network.writer = nil
+        }
+
+        // For a clean, expected end: the remote shell exited on its own
+        // (e.g. the user typed `exit`/`logout`, or Ctrl+D). Auto-reconnect
+        // must NOT fire here -- reconnecting right back into a fresh shell
+        // the instant the user deliberately logged out would be exactly
+        // the wrong behavior. Treated the same as a user-initiated
+        // disconnect: publish `.disconnected`, nothing more.
+        func finishCleanly() async {
+            clearNetworkState()
+            await MainActor.run { self.state = .disconnected }
+        }
+
+        // For a genuine unexpected drop or failure (network blip, auth
+        // failure, host key rejected, nonzero shell exit code, etc.):
+        // publishes state and fires `onDrop` so SessionManager can
+        // reconnect-or-kill per the auto-reconnect setting, unless this
+        // was itself the result of an explicit `disconnect()` call.
+        func finishWithDrop(_ newState: State) async {
+            clearNetworkState()
             await MainActor.run {
                 self.state = newState
                 if !self.userInitiatedClose {
@@ -204,20 +226,21 @@ final class SSHConnection: Identifiable, Hashable, @unchecked Sendable {
                         }
                     }
                 }
-                await finish(.disconnected)
+                await finishCleanly()
             } catch let error as NIO.ChannelError where error == .alreadyClosed {
                 // Citadel's withPTY tries to close the channel again on the
                 // way out; if the remote end already hung up (e.g. the user
                 // typed `exit`), that second close throws this. It's not a
                 // real failure -- verified against a real server where the
                 // PTY session completed successfully and only the trailing
-                // close-after-close raised this.
-                await finish(.disconnected)
+                // close-after-close raised this. Same as the clean-exit
+                // case above: no auto-reconnect.
+                await finishCleanly()
             } catch {
-                await finish(.failed(Self.describe(error)))
+                await finishWithDrop(.failed(Self.describe(error)))
             }
         } catch {
-            await finish(.failed(Self.describe(error)))
+            await finishWithDrop(.failed(Self.describe(error)))
         }
     }
 
