@@ -19,6 +19,12 @@ final class HostStore {
         try save()
     }
 
+    func update(_ host: SSHHost) throws {
+        guard let index = hosts.firstIndex(where: { $0.id == host.id }) else { return }
+        hosts[index] = host
+        try save()
+    }
+
     func delete(_ host: SSHHost) throws {
         hosts.removeAll { $0.id == host.id }
         try save()

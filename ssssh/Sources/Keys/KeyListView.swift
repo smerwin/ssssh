@@ -1,9 +1,8 @@
 import SwiftUI
 
 struct KeyListView: View {
-    @State private var keyStore = KeyStore()
+    @Environment(KeyStore.self) private var keyStore
     @State private var isPresentingGenerator = false
-    @State private var newKeyLabel = ""
 
     var body: some View {
         NavigationStack {
@@ -12,19 +11,29 @@ struct KeyListView: View {
                     ContentUnavailableView(
                         "No Keys Yet",
                         systemImage: "key",
-                        description: Text("Generate an Ed25519 key to get started.")
+                        description: Text("Generate a key to get started.")
                     )
                 }
                 ForEach(keyStore.keys) { key in
-                    VStack(alignment: .leading) {
-                        Text(key.label).font(.headline)
-                        Text(key.algorithm.displayName)
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
+                    NavigationLink(value: key) {
+                        VStack(alignment: .leading) {
+                            Text(key.label).font(.headline)
+                            Text(key.algorithm.displayName)
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+                .onDelete { offsets in
+                    for index in offsets {
+                        try? keyStore.delete(keyStore.keys[index])
                     }
                 }
             }
             .navigationTitle("Keys")
+            .navigationDestination(for: SSHKey.self) { key in
+                KeyDetailView(key: key)
+            }
             .toolbar {
                 ToolbarItem(placement: .primaryAction) {
                     Button {
@@ -34,13 +43,58 @@ struct KeyListView: View {
                     }
                 }
             }
-            .alert("New Key", isPresented: $isPresentingGenerator) {
-                TextField("Label (e.g. personal)", text: $newKeyLabel)
-                Button("Generate") {
-                    try? keyStore.generateKey(label: newKeyLabel)
-                    newKeyLabel = ""
+            .sheet(isPresented: $isPresentingGenerator) {
+                GenerateKeyView()
+            }
+        }
+    }
+}
+
+private struct GenerateKeyView: View {
+    @Environment(KeyStore.self) private var keyStore
+    @Environment(\.dismiss) private var dismiss
+
+    @State private var label = ""
+    @State private var algorithm: SSHKeyAlgorithm = .ed25519
+    @State private var errorMessage: String?
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Label") {
+                    TextField("e.g. personal", text: $label)
+                        #if os(iOS)
+                        .textInputAutocapitalization(.never)
+                        #endif
                 }
-                Button("Cancel", role: .cancel) {}
+                Section("Algorithm") {
+                    Picker("Algorithm", selection: $algorithm) {
+                        ForEach([SSHKeyAlgorithm.ed25519, .ecdsaP256, .ecdsaP384], id: \.self) { option in
+                            Text(option.displayName).tag(option)
+                        }
+                    }
+                    .pickerStyle(.inline)
+                }
+                if let errorMessage {
+                    Text(errorMessage).foregroundStyle(.red)
+                }
+            }
+            .navigationTitle("New Key")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Generate") {
+                        do {
+                            _ = try keyStore.generateKey(label: label, algorithm: algorithm)
+                            dismiss()
+                        } catch {
+                            errorMessage = error.localizedDescription
+                        }
+                    }
+                    .disabled(label.trimmingCharacters(in: .whitespaces).isEmpty)
+                }
             }
         }
     }
@@ -48,4 +102,5 @@ struct KeyListView: View {
 
 #Preview {
     KeyListView()
+        .environment(KeyStore())
 }
