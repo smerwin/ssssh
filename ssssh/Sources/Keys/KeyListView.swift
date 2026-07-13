@@ -2,7 +2,9 @@ import SwiftUI
 
 struct KeyListView: View {
     @Environment(KeyStore.self) private var keyStore
+    @Environment(PurchaseManager.self) private var purchaseManager
     @State private var isPresentingGenerator = false
+    @State private var isPresentingPaywall = false
 
     var body: some View {
         NavigationStack {
@@ -37,7 +39,11 @@ struct KeyListView: View {
             .toolbar {
                 ToolbarItem(placement: .primaryAction) {
                     Button {
-                        isPresentingGenerator = true
+                        if purchaseManager.isUnlocked || keyStore.keys.isEmpty {
+                            isPresentingGenerator = true
+                        } else {
+                            isPresentingPaywall = true
+                        }
                     } label: {
                         Label("New Key", systemImage: "plus")
                     }
@@ -45,6 +51,9 @@ struct KeyListView: View {
             }
             .sheet(isPresented: $isPresentingGenerator) {
                 GenerateKeyView()
+            }
+            .sheet(isPresented: $isPresentingPaywall) {
+                PaywallView()
             }
         }
     }
@@ -103,4 +112,5 @@ private struct GenerateKeyView: View {
 #Preview {
     KeyListView()
         .environment(KeyStore())
+        .environment(PurchaseManager())
 }

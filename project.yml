@@ -18,6 +18,9 @@ settings:
     CURRENT_PROJECT_VERSION: "2"
     TARGETED_DEVICE_FAMILY: "1,2"
 
+fileGroups:
+  - ssssh/Products.storekit
+
 packages:
   SwiftTerm:
     url: https://github.com/migueldeicaza/SwiftTerm
@@ -67,6 +70,7 @@ targets:
       testTargets:
         - sssshTests
       gatherCoverageData: true
+      storeKitConfiguration: ssssh/Products.storekit
 
   sssshTests:
     type: bundle.unit-test

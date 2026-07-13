@@ -1,0 +1,58 @@
+{
+  "identifier" : "5D7A3B10-4C3B-4E9A-9C7A-1F2E3D4C5B6A",
+  "nonRenewingSubscriptions" : [],
+  "products" : [
+    {
+      "displayPrice" : "9.99",
+      "familyShareable" : false,
+      "internalID" : "1000000000001",
+      "localizations" : [
+        {
+          "description" : "Unlock unlimited hosts and keys, forever.",
+          "displayName" : "Unlock Unlimited",
+          "locale" : "en_US"
+        }
+      ],
+      "productID" : "com.smerwin.ssssh.unlimited",
+      "referenceName" : "Unlock Unlimited (Lifetime)",
+      "type" : "NonConsumable"
+    }
+  ],
+  "settings" : {
+    "_askToBuyEnabled" : false
+  },
+  "subscriptionGroups" : [
+    {
+      "id" : "1000000000002",
+      "localizations" : [],
+      "name" : "ssssh Support",
+      "subscriptions" : [
+        {
+          "adHocOffers" : [],
+          "codeOffers" : [],
+          "displayPrice" : "0.99",
+          "familyShareable" : false,
+          "groupNumber" : 1,
+          "internalID" : "1000000000003",
+          "introductoryOffer" : null,
+          "localizations" : [
+            {
+              "description" : "Support ongoing development and unlock unlimited hosts and keys.",
+              "displayName" : "Monthly Support",
+              "locale" : "en_US"
+            }
+          ],
+          "productID" : "com.smerwin.ssssh.monthly",
+          "recurringSubscriptionPeriod" : "P1M",
+          "referenceName" : "Monthly Support",
+          "subscriptionGroupID" : "1000000000002",
+          "type" : "RecurringSubscription"
+        }
+      ]
+    }
+  ],
+  "version" : {
+    "major" : 3,
+    "minor" : 1
+  }
+}

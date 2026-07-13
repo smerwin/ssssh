@@ -4,8 +4,10 @@ struct HostListView: View {
     @Environment(HostStore.self) private var hostStore
     @Environment(HostKeyStore.self) private var hostKeyStore
     @Environment(SessionManager.self) private var sessionManager
+    @Environment(PurchaseManager.self) private var purchaseManager
 
     @State private var isPresentingAddHost = false
+    @State private var isPresentingPaywall = false
     @State private var editingHost: SSHHost?
     @State private var copyKeyHost: SSHHost?
 
@@ -74,7 +76,11 @@ struct HostListView: View {
             .toolbar {
                 ToolbarItem(placement: .primaryAction) {
                     Button {
-                        isPresentingAddHost = true
+                        if purchaseManager.isUnlocked || hostStore.hosts.isEmpty {
+                            isPresentingAddHost = true
+                        } else {
+                            isPresentingPaywall = true
+                        }
                     } label: {
                         Label("New Host", systemImage: "plus")
                     }
@@ -89,6 +95,9 @@ struct HostListView: View {
             .sheet(item: $copyKeyHost) { host in
                 CopyKeyToServerView(host: host)
             }
+            .sheet(isPresented: $isPresentingPaywall) {
+                PaywallView()
+            }
         }
     }
 }
@@ -101,4 +110,5 @@ struct HostListView: View {
         .environment(keyStore)
         .environment(hostKeyStore)
         .environment(SessionManager(keyStore: keyStore, hostKeyStore: hostKeyStore))
+        .environment(PurchaseManager())
 }
