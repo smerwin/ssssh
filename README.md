@@ -218,8 +218,9 @@ Two things worth knowing before touching the project setup:
 - `SSHKey`: id, label, algorithm, createdAt, publicKeyOpenSSH,
   deployedHostIDs
 - `SSHHost` (named to avoid colliding with Foundation's own `Host` class):
-  id, nickname, hostname, port, username, keyID, startupCommand,
-  knownHostFingerprint
+  id, nickname, hostname, port, username, keyID, startupCommand. Trusted
+  host-key fingerprints live separately in `HostKeyStore`
+  (`known_hosts.json`), keyed by host ID -- not on this struct.
 - `SSHConnection` (runtime only, not persisted): host, connection state,
   output callback -- one instance per host, owned by `SessionManager`
 
