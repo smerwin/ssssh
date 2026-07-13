@@ -127,14 +127,21 @@ worth knowing before relying on them:
 ## Building
 
 The Xcode project is generated from `project.yml` via
-[XcodeGen](https://github.com/yonaskolb/XcodeGen) — `ssssh.xcodeproj` is
-gitignored, not checked in.
+[XcodeGen](https://github.com/yonaskolb/XcodeGen), but `ssssh.xcodeproj`
+**is** checked into git (only `xcuserdata` inside it is ignored) --
+Xcode Cloud needs a real project file present in the repo to discover a
+workflow at all, so gitignoring it isn't an option here despite that
+being XcodeGen's usual recommendation.
+
+`project.yml` is still the source of truth. After editing it:
 
 ```
-brew install xcodegen   # once
-xcodegen generate       # whenever project.yml changes
+xcodegen generate       # regenerates ssssh.xcodeproj
+git add ssssh.xcodeproj # commit the regenerated project along with your change
 open ssssh.xcodeproj
 ```
+
+(`brew install xcodegen` once, if you don't have it.)
 
 Swift package dependencies (SwiftTerm, Citadel) resolve automatically on
 first build.
