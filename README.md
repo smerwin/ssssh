@@ -15,12 +15,21 @@ Three things, done well:
 Everything else (SFTP browsing, port forwarding, Mosh, config sync) is
 explicitly out of scope for v1. This is a terminal, not an IDE.
 
+## Why does it do this
+
+I had to sudo something for Claude the other day and I was away from my laptop.
+
 ## Pricing
 
 Free: one host, one key. A one-time $9.99 in-app purchase (or a $0.99/month
 subscription, if you'd rather support ongoing development) unlocks
 unlimited hosts and keys. Either purchase grants the same entitlement --
 see `Sources/Purchases/PurchaseManager.swift`.
+
+Yes, you can just download and compile this yourself and skip the pricing.
+I charge money at all just to try and recoup my apple developer account spend.
+You could even just knock your own together in a day with Claude like I did,
+or you can clone this repo and save a few tokens on the boring work. 
 
 ## License
 
