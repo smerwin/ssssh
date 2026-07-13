@@ -1,13 +1,12 @@
 # ssssh
 
+<!--
+Xcode Cloud build badge: App Store Connect -> your app -> Xcode Cloud ->
+the workflow -> the "..." menu on the workflow -> Get Badge. Paste the
+Markdown snippet it gives you here in place of this comment.
+-->
+
 smerwin's simple ssh — a minimal, native SSH client for iPhone and iPad.
-
-## Status
-
-All five original milestones are implemented, and the app has been archived,
-uploaded to App Store Connect, and installed via TestFlight on a physical
-device. It's in real, working shape — not a scaffold. See "Known gaps" below
-for what the original spec described but isn't actually built yet.
 
 ## What it does
 
