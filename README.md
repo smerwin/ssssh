@@ -99,7 +99,17 @@ MIT-licensed; their required notices are preserved in [NOTICE.md](NOTICE.md).
   torn down and removed from the Sessions list instead of lingering in a
   disconnected state. There's no hard retry *limit* -- a persistently
   broken host (revoked key, permanently unreachable) will keep retrying
-  forever, just slowly, rather than eventually giving up.
+  forever, just slowly, rather than eventually giving up. Never fires for
+  a *clean* end to the shell (typing `exit`/`logout`, or Ctrl+D) --
+  reconnecting the instant someone deliberately logs out would be exactly
+  the wrong behavior.
+- **Verbose Connecting** (Settings, on by default): narrates each
+  connection lifecycle step (connecting, authenticating, requesting a
+  pty) as `debug1:`-style lines in the terminal itself while a session
+  connects, similar to `ssh -v`. Citadel/NIOSSH don't log the actual
+  handshake internals (key exchange, algorithm negotiation) at all, so
+  this can't show true protocol-level detail -- it narrates the lifecycle
+  steps the app itself controls, not a tap into lower-level logging.
 
 ### 4. Hosts and connections
 
