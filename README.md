@@ -76,13 +76,13 @@ explicitly out of scope for v1. This is a terminal, not an IDE.
   -- the user foregrounding the app is itself a signal they want back in.
 - **Auto-Reconnect** (Settings, on by default): when a session drops
   unexpectedly (network blip, remote hangup, auth failure) while the app is
-  already in the foreground, it's automatically reconnected if this is on;
-  if it's off, the dropped session is torn down and removed from the
-  Sessions list instead of lingering in a disconnected state. Doesn't
-  distinguish a transient drop from a persistently broken one (e.g. a
-  revoked key) -- there's no backoff or retry limit yet, so a host that's
-  simply unreachable will keep retrying at whatever pace `connect()` naturally
-  paces out via its own network timeouts.
+  already in the foreground, it's automatically reconnected with
+  exponential backoff (1s, 2s, 4s, ... capped at 30s, reset after a
+  successful connect) if this is on; if it's off, the dropped session is
+  torn down and removed from the Sessions list instead of lingering in a
+  disconnected state. There's no hard retry *limit* -- a persistently
+  broken host (revoked key, permanently unreachable) will keep retrying
+  forever, just slowly, rather than eventually giving up.
 
 ### 4. Hosts and connections
 
