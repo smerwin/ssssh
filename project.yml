@@ -20,6 +20,7 @@ settings:
 
 fileGroups:
   - ssssh/Products.storekit
+  - PRIVACY.md
 
 packages:
   SwiftTerm:

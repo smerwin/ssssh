@@ -45,6 +45,18 @@ struct PaywallView: View {
                     )
                 }
 
+                VStack(spacing: 4) {
+                    Text("Support Development renews monthly at \(purchaseManager.monthlyProduct?.displayPrice ?? "$0.99") until canceled. Manage or cancel anytime in Settings > Apple Account > Subscriptions.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                    HStack(spacing: 16) {
+                        Link("Terms of Use", destination: LegalLinks.termsOfUse)
+                        Link("Privacy Policy", destination: LegalLinks.privacyPolicy)
+                    }
+                    .font(.caption2)
+                }
+
                 Button("Restore Purchases") {
                     Task {
                         await purchaseManager.restorePurchases()
