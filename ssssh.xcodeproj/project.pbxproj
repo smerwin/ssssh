@@ -38,6 +38,8 @@
 		C4CC99864E5DE30A00A04B27 /* SwiftTerm in Frameworks */ = {isa = PBXBuildFile; productRef = E0E209473F7CC0210D78D756 /* SwiftTerm */; };
 		CED1D6F72429661F03191DD9 /* ScanlineOverlay.swift in Sources */ = {isa = PBXBuildFile; fileRef = B66FDE7D7C228B51648F7E71 /* ScanlineOverlay.swift */; };
 		E2F40DB983550B8F30D0236E /* CopyKeyToServerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6C9110C1A190AFF7F348EA43 /* CopyKeyToServerView.swift */; };
+		E4DDA31D521D963A95C3DC69 /* PaywallView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 23105F08F97DDBB7D82EC0D0 /* PaywallView.swift */; };
+		E6258B065ADF300D187193E1 /* PurchaseManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 50ABEE6C258CD87110CA52A4 /* PurchaseManager.swift */; };
 		E96EEAB924CB443436EB6723 /* KeyGeneratorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F4BE79AA6A7E1F4C665B6452 /* KeyGeneratorTests.swift */; };
 		FE73E3E94DF05059A4E83BF2 /* SSHPrivateKeyMaterial.swift in Sources */ = {isa = PBXBuildFile; fileRef = A64C9DE84719618DC3BA55D4 /* SSHPrivateKeyMaterial.swift */; };
 /* End PBXBuildFile section */
@@ -58,9 +60,12 @@
 		0E7170262F37D3FABAD327E7 /* HostEditView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostEditView.swift; sourceTree = "<group>"; };
 		11030446A2958F1F5044A3B8 /* KeyDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyDetailView.swift; sourceTree = "<group>"; };
 		13FF103CCC691D2355A63A5B /* sssshApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = sssshApp.swift; sourceTree = "<group>"; };
+		14274FA8B437DE5D1A5BB8F5 /* Products.storekit */ = {isa = PBXFileReference; path = Products.storekit; sourceTree = "<group>"; };
+		23105F08F97DDBB7D82EC0D0 /* PaywallView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PaywallView.swift; sourceTree = "<group>"; };
 		23E37953DBEC62F4E6A8BB08 /* TerminalSessionView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalSessionView.swift; sourceTree = "<group>"; };
 		32D7D71D0263115B3919B465 /* KeyStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyStore.swift; sourceTree = "<group>"; };
 		4A78C686CE53EFE2F7F711D9 /* ssssh.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = ssssh.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		50ABEE6C258CD87110CA52A4 /* PurchaseManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PurchaseManager.swift; sourceTree = "<group>"; };
 		5811CDCD9D62AD82C54015C6 /* Keychain.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Keychain.swift; sourceTree = "<group>"; };
 		5990039A616CCFE7DA20BB2C /* KeyGenerator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyGenerator.swift; sourceTree = "<group>"; };
 		68C6B93C6C12C898870F2F73 /* SessionManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionManager.swift; sourceTree = "<group>"; };
@@ -139,9 +144,19 @@
 			path = Common;
 			sourceTree = "<group>";
 		};
+		824E9B22D0D9666461E40D06 /* Purchases */ = {
+			isa = PBXGroup;
+			children = (
+				23105F08F97DDBB7D82EC0D0 /* PaywallView.swift */,
+				50ABEE6C258CD87110CA52A4 /* PurchaseManager.swift */,
+			);
+			path = Purchases;
+			sourceTree = "<group>";
+		};
 		9C8B51CC28F204BF3AEEEA89 /* ssssh */ = {
 			isa = PBXGroup;
 			children = (
+				14274FA8B437DE5D1A5BB8F5 /* Products.storekit */,
 				09AEB3C124FAD1BA30CA32D9 /* Resources */,
 				C8276131DEA8AD15CD686C2E /* Sources */,
 				AC342B13DDE292A52028BA29 /* Tests */,
@@ -210,6 +225,7 @@
 				02B17E0B29A78B781123C001 /* Hosts */,
 				B6FC11121C2CD432A7278624 /* Keys */,
 				A3B6009C05E8BE058E8F2166 /* Models */,
+				824E9B22D0D9666461E40D06 /* Purchases */,
 				EE2AF0359281EE59D8E546CC /* SSH */,
 				EB657835EB6E25096FC76060 /* Terminal */,
 			);
@@ -349,6 +365,8 @@
 				964627D0EEDBA09475E66146 /* KeyListView.swift in Sources */,
 				59330FA2F340DB8B21D9D03E /* KeyStore.swift in Sources */,
 				5312287D9B46A14EDC277640 /* Keychain.swift in Sources */,
+				E4DDA31D521D963A95C3DC69 /* PaywallView.swift in Sources */,
+				E6258B065ADF300D187193E1 /* PurchaseManager.swift in Sources */,
 				1C238A3BEDE2C2FBEB99CD02 /* SSHConnection.swift in Sources */,
 				626F2B67DE9EAED552830F20 /* SSHCopyID.swift in Sources */,
 				10AC4367104585882C45F100 /* SSHHost.swift in Sources */,
