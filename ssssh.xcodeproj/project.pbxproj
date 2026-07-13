@@ -19,6 +19,7 @@
 		54F6CA36EADC0D5274B75964 /* SessionsListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 896F10A3A80169241CAF0C10 /* SessionsListView.swift */; };
 		59330FA2F340DB8B21D9D03E /* KeyStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 32D7D71D0263115B3919B465 /* KeyStore.swift */; };
 		5BC421170EA3E3A0513E95C5 /* HostStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 03E19196CD9A1B4032936B51 /* HostStore.swift */; };
+		5CCD10760C3D7EE392D7F972 /* CitadelSendability.swift in Sources */ = {isa = PBXBuildFile; fileRef = F4596211916F17E7A19949B2 /* CitadelSendability.swift */; };
 		626F2B67DE9EAED552830F20 /* SSHCopyID.swift in Sources */ = {isa = PBXBuildFile; fileRef = E19E2E1689C90CFCEC01B315 /* SSHCopyID.swift */; };
 		6CA528725BEFA535112C9DBD /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 01200017DA38268C82D14B57 /* Assets.xcassets */; };
 		6EC63CD26F373F22161118AE /* SSHKey.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9B3FF6CF3D93F6D67E8B68E6 /* SSHKey.swift */; };
@@ -80,6 +81,7 @@
 		E19E2E1689C90CFCEC01B315 /* SSHCopyID.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SSHCopyID.swift; sourceTree = "<group>"; };
 		F25E12243FCBF53A0F908138 /* HostListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostListView.swift; sourceTree = "<group>"; };
 		F342E954547FD05D36E58DFE /* HostKeyStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostKeyStore.swift; sourceTree = "<group>"; };
+		F4596211916F17E7A19949B2 /* CitadelSendability.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CitadelSendability.swift; sourceTree = "<group>"; };
 		F4BE79AA6A7E1F4C665B6452 /* KeyGeneratorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyGeneratorTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -222,6 +224,7 @@
 		EE2AF0359281EE59D8E546CC /* SSH */ = {
 			isa = PBXGroup;
 			children = (
+				F4596211916F17E7A19949B2 /* CitadelSendability.swift */,
 				CA60E549D7F68D1D9CC615CD /* HostKeyFingerprint.swift */,
 				F342E954547FD05D36E58DFE /* HostKeyStore.swift */,
 				68C6B93C6C12C898870F2F73 /* SessionManager.swift */,
@@ -325,6 +328,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				5CCD10760C3D7EE392D7F972 /* CitadelSendability.swift in Sources */,
 				96DFAD0C51D5FFF184B1CAC9 /* ContentView.swift in Sources */,
 				E2F40DB983550B8F30D0236E /* CopyKeyToServerView.swift in Sources */,
 				7EA6B690FF1844EDB40F1B0A /* HostEditView.swift in Sources */,
