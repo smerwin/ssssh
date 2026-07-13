@@ -129,12 +129,12 @@ private struct TerminalHostView: UIViewRepresentable {
             view.addGestureRecognizer(swipeUp)
         }
 
-        @objc private func handleSwipeDown() {
-            terminalView?.resignFirstResponder()
+        @objc @MainActor private func handleSwipeDown() {
+            _ = terminalView?.resignFirstResponder()
         }
 
-        @objc private func handleSwipeUp() {
-            terminalView?.becomeFirstResponder()
+        @objc @MainActor private func handleSwipeUp() {
+            _ = terminalView?.becomeFirstResponder()
         }
 
         func send(source: SwiftTerm.TerminalView, data: ArraySlice<UInt8>) {
