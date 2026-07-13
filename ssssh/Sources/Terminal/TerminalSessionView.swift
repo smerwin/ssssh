@@ -86,15 +86,55 @@ private struct TerminalHostView: UIViewRepresentable {
         Coordinator()
     }
 
+    /// Kept separate from `Coordinator` because conforming a single class
+    /// to both `UIGestureRecognizerDelegate` and `TerminalViewDelegate`
+    /// makes the compiler infer the whole type as main-actor-isolated,
+    /// which then conflicts with `TerminalViewDelegate`'s nonisolated
+    /// requirements ("conformance ... crosses into main actor-isolated
+    /// code"). A standalone delegate object sidesteps that entirely.
+    private final class SwipeSimultaneousRecognitionDelegate: NSObject, UIGestureRecognizerDelegate {
+        func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer) -> Bool {
+            true
+        }
+    }
+
     final class Coordinator: NSObject, TerminalViewDelegate {
         private weak var connection: SSHConnection?
+        private weak var terminalView: SwiftTerm.TerminalView?
+        private var swipeDelegate: SwipeSimultaneousRecognitionDelegate?
 
         @MainActor
         func attach(view: SwiftTerm.TerminalView, connection: SSHConnection) {
             self.connection = connection
+            self.terminalView = view
             connection.onOutput = { [weak view] bytes in
                 view?.feed(byteArray: bytes[...])
             }
+
+            // Swipe down to dismiss the keyboard and use the freed-up space
+            // as a taller terminal; swipe up to bring the keyboard back.
+            // Allowed to recognize alongside the scroll view's own pan
+            // gesture so a quick swipe isn't swallowed by scrolling.
+            let swipeDelegate = SwipeSimultaneousRecognitionDelegate()
+            self.swipeDelegate = swipeDelegate
+
+            let swipeDown = UISwipeGestureRecognizer(target: self, action: #selector(handleSwipeDown))
+            swipeDown.direction = .down
+            swipeDown.delegate = swipeDelegate
+            view.addGestureRecognizer(swipeDown)
+
+            let swipeUp = UISwipeGestureRecognizer(target: self, action: #selector(handleSwipeUp))
+            swipeUp.direction = .up
+            swipeUp.delegate = swipeDelegate
+            view.addGestureRecognizer(swipeUp)
+        }
+
+        @objc private func handleSwipeDown() {
+            terminalView?.resignFirstResponder()
+        }
+
+        @objc private func handleSwipeUp() {
+            terminalView?.becomeFirstResponder()
         }
 
         func send(source: SwiftTerm.TerminalView, data: ArraySlice<UInt8>) {

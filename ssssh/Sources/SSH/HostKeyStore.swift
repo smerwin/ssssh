@@ -53,13 +53,22 @@ final class HostKeyStore: @unchecked Sendable {
     /// Called from the NIOSSH validation callback (may be on a NIO event
     /// loop thread); hops to the main actor to consult/update state.
     nonisolated func evaluate(host: SSHHost, fingerprint: String) async throws {
-        try await MainActor.run {
+        // NB: the `return` inside this closure only exits the closure
+        // itself, not `evaluate` -- without capturing and checking its
+        // result, execution falls through to the confirmation-dialog
+        // path below on *every* connection, even to an already-trusted
+        // host. Bug fixed here; don't reintroduce it.
+        let alreadyTrusted = try await MainActor.run { () -> Bool in
             if let known = self.trustedFingerprints[host.id] {
                 guard known == fingerprint else {
                     throw HostKeyMismatch(hostNickname: host.nickname, expected: known, presented: fingerprint)
                 }
-                return
+                return true
             }
+            return false
+        }
+        if alreadyTrusted {
+            return
         }
 
         let trusted = await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
