@@ -2,6 +2,13 @@
 
 smerwin's simple ssh — a minimal, native SSH client for iPhone and iPad.
 
+## Status
+
+All five original milestones are implemented, and the app has been archived,
+uploaded to App Store Connect, and installed via TestFlight on a physical
+device. It's in real, working shape — not a scaffold. See "Known gaps" below
+for what the original spec described but isn't actually built yet.
+
 ## What it does
 
 Three things, done well:
@@ -17,73 +24,79 @@ explicitly out of scope for v1. This is a terminal, not an IDE.
 
 ## Platform
 
-- iOS 17 / iPadOS 17+, SwiftUI, Swift 6.
+- iOS 17 / iPadOS 17+, SwiftUI, Swift 6 language mode.
 - iPhone and iPad in one universal target. No Mac Catalyst, no watch/TV
   targets.
-- External keyboard support (full-size and Magic Keyboard) is a first-class
-  input path, not an afterthought, since the on-screen keyboard is the weak
-  link for terminal use.
+- Keyboard accessory row (Esc/Tab/Ctrl/arrows/function keys) comes from
+  SwiftTerm's built-in `TerminalAccessory`, not custom-built — it was
+  already exactly what the spec asked for, so there was no reason to
+  reinvent it.
 
 ## Core features
 
 ### 1. Key management
 
-- Default algorithm: **Ed25519**. Offer ECDSA (P-256/384) as a fallback for
-  legacy servers; do not offer plain RSA or DSA in the generation UI (import
-  of existing RSA keys is still supported for compatibility).
-- Keys are generated on-device and the private key material never leaves the
-  device unencrypted. Private keys are stored in the iOS Keychain with
-  `kSecAttrAccessibleWhenUnlockedThisDeviceOnly`, and gated behind Face
-  ID/Touch ID (`LAContext`) before use.
-- Support multiple keys (e.g. "personal", "work"), each with a label, a
-  creation date, and a list of hosts it's been deployed to.
-- Public key export via share sheet, copy-to-clipboard, and QR code (useful
-  for pasting into a GitHub/GitLab account or a cloud provider's console from
-  another device).
-- Optional passphrase on the private key, on top of Keychain/biometric
-  protection.
+- Ed25519 (via `CryptoKit.Curve25519.Signing.PrivateKey`), ECDSA P-256, and
+  ECDSA P-384 generation, all on-device. Private key bytes are stored in the
+  Keychain (`kSecAttrAccessibleWhenUnlockedThisDeviceOnly`) and never leave
+  it; `KeyStore` only ever hands out a typed, reconstituted
+  `SSHPrivateKeyMaterial` value to the SSH layer, never raw key bytes.
+- Multiple keys, each with a label, algorithm, creation date, and a list of
+  host IDs it's been deployed to (`KeyStore`, `SSHKey`).
+- Public key export via `KeyDetailView`: QR code (CoreImage), copy to
+  clipboard, and the system share sheet.
+- RSA exists as an enum case (`SSHKeyAlgorithm.rsa`) reserved for future
+  import support, but there's no import UI yet -- see "Known gaps."
 
 ### 2. Copy key to server
 
-- A guided flow equivalent to `ssh-copy-id`:
-  1. User enters host, port, username, and authenticates once with a
-     password (or an existing key).
-  2. App opens a session, ensures `~/.ssh` exists with `0700`, appends the
-     selected public key to `~/.ssh/authorized_keys` if not already present,
-     and sets `0600` on the file.
-  3. App confirms success by reconnecting with the new key before reporting
-     done.
-- Never stores the password used for this step; it lives only in memory for
-  the duration of the operation.
+- `SSHCopyID.copyKey` implements the guided `ssh-copy-id` flow for real:
+  connects with password auth (Citadel), runs a single idempotent remote
+  command to create `~/.ssh` (`0700`) and append the public key to
+  `authorized_keys` (`0600`) if it isn't already there, then reconnects
+  using the new key to confirm it actually works before reporting success.
+- The key line is shipped base64-encoded and decoded remotely into a shell
+  variable, so its contents never need shell-escaping.
+- The password is a local variable for the duration of the call; it's never
+  written to disk or logged.
 
 ### 3. Terminal
 
-- Full terminal emulation (xterm/VT100 control sequences), not a
-  command-and-response box — curses apps must render correctly.
-- Visual theme: green-on-black CRT look by default (subtle scanline/glow
-  effect, toggle-able), with a plain high-contrast theme as an alternative
-  for accessibility.
-- An accessory row above the keyboard for keys iOS doesn't expose:
-  `Esc`, `Tab`, `Ctrl`, arrow keys, `Ctrl+C`, and a long-press for less common
-  keys (`Ctrl+A/E/K/U`, function keys). Ctrl acts as a modifier chord with the
-  next tap.
-- Multiple concurrent sessions as tabs, each independent and backgroundable;
-  reconnect-on-resume when the app returns to foreground (sessions don't
-  survive a full app kill, to keep scope small).
-- Copy/paste and text selection tuned for terminal content (rectangular
-  selection is a stretch goal, not required for v1).
+- `SSHConnection` wraps a real Citadel `SSHClient`: pubkey auth (Ed25519 or
+  ECDSA), PTY allocation (`SSHChannelRequestEvent.PseudoTerminalRequest`),
+  and a bidirectional byte stream wired directly into SwiftTerm's
+  `TerminalView` (`TerminalSessionView`) -- keystrokes out via
+  `TerminalViewDelegate.send`, output in via `TerminalView.feed`, resize
+  events forwarded both ways.
+- Verified against a real OpenSSH server (a throwaway Docker container, not
+  just unit tests): password auth, key deployment, pubkey auth, and an
+  interactive PTY echo all round-tripped correctly end to end.
+- Visual theme: green-on-black CRT look by default, with a subtle scanline
+  overlay (`ScanlineOverlay`) and a high-contrast alternative, toggled from
+  the Settings tab and persisted via `@AppStorage`.
+- Copy/paste and OSC 52 clipboard support come from SwiftTerm's built-in
+  defaults, not custom code; rectangular selection isn't implemented.
+- Sessions persist independent of navigation: `SessionManager` keeps one
+  `SSHConnection` per host alive regardless of which view is on screen, and
+  reconnects any dropped session when the app returns to the foreground
+  (`scenePhase` -> `.active`).
 
 ### 4. Hosts and connections
 
-- Saved host profiles: nickname, hostname/IP, port (default 22), username,
-  which key to authenticate with, and an optional startup command
-  (e.g. `tmux attach || tmux new`).
-- Standard `known_hosts` verification — new host keys prompt a
-  fingerprint-confirmation dialog (TOFU), changed host keys block the
-  connection with a clear warning instead of silently proceeding.
-- No cloud sync of host profiles or keys in v1 — everything is local to the
-  device. (iCloud Keychain sync of the private keys themselves is a plausible
-  v1.1 addition, off by default.)
+- Add/edit sheets (`HostEditView`) for nickname, hostname, port, username,
+  which key to use, and an optional startup command.
+- Trust-on-first-use host key verification (`HostKeyStore`,
+  `TOFUHostKeyValidator`): a new host's SHA256 fingerprint is shown in a
+  real confirmation dialog before it's trusted and persisted; a host whose
+  key has since changed fails the connection outright with no
+  in-the-moment override -- the only way back in is explicitly "forgetting"
+  the known host key from its context menu.
+- A "Sessions" tab lists every host with a live or recent connection and
+  lets you jump back into any of them -- the practical equivalent of
+  browser-style tabs, implemented as a list/switcher rather than a
+  dynamic `TabView`.
+- No cloud sync of host profiles or keys -- everything is local
+  (`Application Support/hosts.json`, `keys.json`, `known_hosts.json`).
 
 ## Non-goals (v1)
 
@@ -95,6 +108,21 @@ explicitly out of scope for v1. This is a terminal, not an IDE.
 
 These are reasonable follow-ups once the core loop (generate → deploy → use)
 is solid, but they add real surface area and aren't needed to be useful.
+
+## Known gaps
+
+Things the original spec described that aren't actually implemented yet --
+worth knowing before relying on them:
+
+- **No biometric gate on key use.** Private keys are Keychain-protected
+  (`kSecAttrAccessibleWhenUnlockedThisDeviceOnly`) but there's no
+  `LAContext`/Face ID prompt before a key is used for auth, despite
+  `NSFaceIDUsageDescription` already being in the Info.plist.
+- **No passphrase support** on generated private keys, on top of Keychain
+  protection.
+- **No RSA import.** The algorithm case exists in the data model; there's
+  no UI to paste/import an existing key of any kind.
+- **No rectangular text selection** in the terminal.
 
 ## Building
 
@@ -111,52 +139,52 @@ open ssssh.xcodeproj
 Swift package dependencies (SwiftTerm, Citadel) resolve automatically on
 first build.
 
-## Architecture sketch
+Note: XcodeGen 2.45.4's top-level `resources:` target key silently produces
+no Resources build phase on this project (a real, confirmed bug, not a
+config mistake) -- the app icon and accent color are wired in via a
+`sources` entry with an explicit `buildPhase: resources` override instead.
+Don't switch this back to a plain `resources:` list without re-verifying
+the built app actually contains `Assets.car` and `CFBundleIconName`.
 
-- **UI**: SwiftUI throughout. One tab-bar app: Hosts, Keys, and active
-  Terminal sessions.
-- **SSH transport**: a pure-Swift SSH implementation (e.g. Citadel, built on
-  SwiftNIO) rather than wrapping libssh2/NMSSH, to avoid a C dependency and
-  get async/await-native APIs. Needs to support Ed25519 auth, exec/shell
-  channels with PTY allocation, and window resizing.
-- **Terminal emulation**: SwiftTerm (or equivalent VT100/xterm emulator with
-  an existing Swift/UIKit view) for rendering and input handling, driven by
-  the PTY byte stream from the SSH channel.
-- **Key storage**: Keychain Services directly; no custom crypto for key
-  generation — use `CryptoKit`'s `Curve25519.Signing.PrivateKey` for Ed25519
-  generation and export in standard OpenSSH wire/PEM format.
-- **Persistence**: host profiles and key metadata in a small local store
-  (SwiftData or a plain Codable JSON file) — no server, no account system.
+## Architecture
 
-## Data model (sketch)
+- **UI**: SwiftUI throughout. Four tabs: Hosts, Sessions, Keys, Settings.
+- **SSH transport**: [Citadel](https://github.com/orlandos-nl/Citadel)
+  (built on SwiftNIO/NIOSSH) for async/await-native Ed25519/ECDSA auth, PTY
+  shells, and password auth for the copy-id flow.
+- **Terminal emulation**: [SwiftTerm](https://github.com/migueldeicaza/SwiftTerm)
+  for VT100/xterm rendering, input handling, and the keyboard accessory row.
+- **Key storage**: Keychain Services directly (`Common/Keychain.swift`);
+  key generation via `CryptoKit`, exported as standard OpenSSH wire-format
+  `authorized_keys` lines.
+- **Persistence**: host profiles, key metadata, and trusted host-key
+  fingerprints as plain Codable JSON files under Application Support -- no
+  SwiftData, no server, no account system.
+- **Concurrency**: `SSHConnection` and `HostKeyStore` are `@MainActor` and
+  `@Observable` for UI binding, but Citadel's own types (`SSHClient`,
+  `SSHAuthenticationMethod`, `TTYStdinWriter`) aren't Sendable-audited, so
+  the actual connect/PTY-read work runs in a detached, non-isolated task
+  that hops back to the main actor only to publish `state`/`onOutput`. See
+  the doc comments on `SSHConnection` and `HostKeyStore` for the reasoning.
 
-- `SSHKey`: id, label, algorithm, createdAt, publicKeyOpenSSH, keychainRef,
-  deployedHosts: [HostID]
-- `Host`: id, nickname, hostname, port, username, keyID, startupCommand?,
+## Data model
+
+- `SSHKey`: id, label, algorithm, createdAt, publicKeyOpenSSH,
+  deployedHostIDs
+- `SSHHost` (named to avoid colliding with Foundation's own `Host` class):
+  id, nickname, hostname, port, username, keyID, startupCommand,
   knownHostFingerprint
-- `Session` (runtime only, not persisted): hostID, PTY size, connection
-  state, scrollback buffer
+- `SSHConnection` (runtime only, not persisted): host, connection state,
+  output callback -- one instance per host, owned by `SessionManager`
 
 ## Security notes
 
 - Private keys never leave the device and are never transmitted, backed up
   unencrypted, or logged.
-- Host key verification is mandatory; there is no "always trust" bypass.
-- Biometric gate on private key use is required, not optional, given the
-  blast radius of a stolen key.
+- Host key verification is mandatory; there is no "always trust" bypass --
+  see "Hosts and connections" above.
 - The `ssh-copy-id` flow's password path is the single highest-risk piece of
   code in the app (handles a plaintext credential, however briefly) and
   deserves the most scrutiny/testing.
-
-## Suggested milestones
-
-1. **Key management**: generate, store, list, export/QR a key. No
-   networking yet.
-2. **Connect + terminal**: SSH auth with an existing/imported key, PTY shell,
-   SwiftTerm rendering, accessory keyboard row. This is the "does it actually
-   work as a terminal" milestone — test against `vim` and `tmux`.
-3. **Copy key to server**: password-authenticated bootstrap flow described
-   above.
-4. **Host management polish**: saved profiles, known_hosts/TOFU handling,
-   session tabs, reconnect-on-resume.
-5. **Theming**: green CRT mode, accessibility theme, app icon/branding.
+- See "Known gaps" for the biometric-gate and passphrase protections the
+  original spec called for but that aren't implemented yet.
