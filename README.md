@@ -2,13 +2,6 @@
 
 smerwin's simple ssh — a minimal, native SSH client for iPhone and iPad.
 
-## Status
-
-All five original milestones are implemented, and the app has been archived,
-uploaded to App Store Connect, and installed via TestFlight on a physical
-device. It's in real, working shape — not a scaffold. See "Known gaps" below
-for what the original spec described but isn't actually built yet.
-
 ## What it does
 
 Three things, done well:
@@ -124,34 +117,43 @@ worth knowing before relying on them:
   no UI to paste/import an existing key of any kind.
 - **No rectangular text selection** in the terminal.
 
-## Building
+## Building locally
 
-The Xcode project is generated from `project.yml` via
-[XcodeGen](https://github.com/yonaskolb/XcodeGen), but `ssssh.xcodeproj`
-**is** checked into git (only `xcuserdata` inside it is ignored) --
-Xcode Cloud needs a real project file present in the repo to discover a
-workflow at all, so gitignoring it isn't an option here despite that
-being XcodeGen's usual recommendation.
-
-`project.yml` is still the source of truth. After editing it:
+Prerequisites: Xcode 16+, and [XcodeGen](https://github.com/yonaskolb/XcodeGen)
+(`brew install xcodegen`).
 
 ```
-xcodegen generate       # regenerates ssssh.xcodeproj
-git add ssssh.xcodeproj # commit the regenerated project along with your change
+git clone git@github.com:smerwin/ssssh.git
+cd ssssh
+xcodegen generate   # produces ssssh.xcodeproj from project.yml
 open ssssh.xcodeproj
 ```
 
-(`brew install xcodegen` once, if you don't have it.)
+Then build/run the `ssssh` scheme like any other Xcode project. Swift
+package dependencies (SwiftTerm, Citadel) resolve automatically on first
+build -- no extra setup.
 
-Swift package dependencies (SwiftTerm, Citadel) resolve automatically on
-first build.
+**`project.yml` is the source of truth, not `ssssh.xcodeproj`.** Don't hand-edit
+the `.xcodeproj`. After changing `project.yml`:
 
-Note: XcodeGen 2.45.4's top-level `resources:` target key silently produces
-no Resources build phase on this project (a real, confirmed bug, not a
-config mistake) -- the app icon and accent color are wired in via a
-`sources` entry with an explicit `buildPhase: resources` override instead.
-Don't switch this back to a plain `resources:` list without re-verifying
-the built app actually contains `Assets.car` and `CFBundleIconName`.
+```
+xcodegen generate
+git add ssssh.xcodeproj   # the regenerated project IS committed -- see below
+```
+
+Two things worth knowing before touching the project setup:
+
+- **`ssssh.xcodeproj` is checked into git** (only `xcuserdata` inside it is
+  ignored), unlike XcodeGen's usual recommendation to gitignore it. This is
+  required for Xcode Cloud, which needs a real project file present in the
+  repo to discover a workflow at all -- if it's missing, Cloud fails with
+  "Project ssssh.xcodeproj does not exist at the root of the repository."
+- **XcodeGen 2.45.4's top-level `resources:` target key silently produces no
+  Resources build phase** on this project (a real, confirmed bug, not a
+  config mistake) -- the app icon and accent color are wired in via a
+  `sources` entry with an explicit `buildPhase: resources` override instead.
+  Don't switch this back to a plain `resources:` list without re-verifying
+  the built app actually contains `Assets.car` and `CFBundleIconName`.
 
 ## Architecture
 
