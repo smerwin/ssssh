@@ -3,6 +3,11 @@ import SwiftUI
 struct ContentView: View {
     @Environment(\.scenePhase) private var scenePhase
     @Environment(SessionManager.self) private var sessionManager
+    @AppStorage(AppSettingsKeys.terminalTheme) private var themeRawValue = TerminalTheme.crtGreen.rawValue
+
+    private var theme: TerminalTheme {
+        TerminalTheme(rawValue: themeRawValue) ?? .crtGreen
+    }
 
     var body: some View {
         TabView {
@@ -18,6 +23,7 @@ struct ContentView: View {
             SettingsView()
                 .tabItem { Label("Settings", systemImage: "gearshape") }
         }
+        .tint(theme.accentColor)
         .onChange(of: scenePhase) { _, newPhase in
             if newPhase == .active {
                 sessionManager.reconnectIfNeeded()

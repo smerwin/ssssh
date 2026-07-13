@@ -32,4 +32,17 @@ enum TerminalTheme: String, CaseIterable {
     var showsScanlines: Bool {
         self == .crtGreen || self == .amber
     }
+
+    /// Used to tint UI chrome outside the terminal itself (currently the
+    /// tab bar's selected-item color) so it matches the active theme.
+    /// Deliberately distinct from `foreground`: high contrast's terminal
+    /// text is a fixed white-on-black look, but `.primary` adapts to the
+    /// system's light/dark appearance so the tab bar (which isn't forced
+    /// to a black background) keeps good contrast either way.
+    var accentColor: Color {
+        switch self {
+        case .crtGreen, .amber: return foreground
+        case .highContrast: return .primary
+        }
+    }
 }
