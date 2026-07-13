@@ -82,6 +82,14 @@ final class SSHConnection: Identifiable, Hashable, @unchecked Sendable {
     private let network = SSHNetworkState()
     private var userInitiatedClose = false
 
+    /// Handle to the in-flight `connect()`/`runSession` task, so `disconnect()`
+    /// can cancel a connection attempt that hasn't finished its handshake yet.
+    /// Without this, closing a session while it's still "Connecting…" left the
+    /// handshake running in the background with nothing watching it -- it would
+    /// complete moments later, publish `.connected`, and open a PTY as if the
+    /// close had never happened.
+    private var connectTask: Task<Void, Never>?
+
     /// Consecutive unexpected drops since the last successful connect,
     /// used to space out auto-reconnect attempts (`reconnectWithBackoff`)
     /// so a persistently broken host (revoked key, unreachable network)
@@ -138,7 +146,7 @@ final class SSHConnection: Identifiable, Hashable, @unchecked Sendable {
         let host = self.host
         let network = self.network
 
-        Task.detached { [weak self] in
+        connectTask = Task.detached { [weak self] in
             await self?.runSession(host: host, material: material, hostKeyStore: hostKeyStore, network: network)
         }
     }
@@ -213,6 +221,19 @@ final class SSHConnection: Identifiable, Hashable, @unchecked Sendable {
                 reconnect: .never
             )
             network.client = client
+
+            // The handshake above has no cancellation checks of its own, so a
+            // `disconnect()` that arrived while it was in flight (e.g. closing
+            // a session that's still "Connecting…") has nothing to close yet
+            // and can only cancel this task. Check for that now, before
+            // publishing `.connected` and opening a PTY the user already
+            // asked to close.
+            guard !Task.isCancelled else {
+                clearNetworkState()
+                try? await client.close()
+                return
+            }
+
             await emitDiagnostic("debug1: Authentication succeeded (\(Self.algorithmDescription(for: material))) for user '\(host.username)'.")
             await MainActor.run {
                 self.state = .connected
@@ -280,6 +301,8 @@ final class SSHConnection: Identifiable, Hashable, @unchecked Sendable {
     func disconnect() {
         userInitiatedClose = true
         consecutiveFailureCount = 0
+        connectTask?.cancel()
+        connectTask = nil
         let client = network.client
         network.client = nil
         network.writer = nil
