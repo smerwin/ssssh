@@ -100,8 +100,16 @@ struct PaywallView: View {
             }
         } label: {
             VStack(spacing: 2) {
-                if purchasingProductID == product?.id {
+                if let product, purchasingProductID == product.id {
                     ProgressView()
+                } else if product == nil {
+                    HStack(spacing: 6) {
+                        ProgressView()
+                            .controlSize(.small)
+                        Text("Loading \(fallbackTitle)…")
+                            .font(.headline)
+                    }
+                    .foregroundStyle(.secondary)
                 } else {
                     Text("\(product?.displayName ?? fallbackTitle) — \(product?.displayPrice ?? fallbackPrice)")
                         .font(.headline)

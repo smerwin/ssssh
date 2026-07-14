@@ -15,19 +15,31 @@ struct CopyKeyToServerView: View {
     @State private var password = ""
     @State private var isWorking = false
     @State private var result: Result<Void, Error>?
+    @FocusState private var isPasswordFocused: Bool
 
     var body: some View {
         NavigationStack {
             Form {
                 Section("Key to deploy") {
-                    Picker("Key", selection: $selectedKeyID) {
-                        ForEach(keyStore.keys) { key in
-                            Text(key.label).tag(Optional(key.id))
+                    if keyStore.keys.isEmpty {
+                        Label("You don't have any keys yet. Generate one in the Keys tab, then come back here.", systemImage: "exclamationmark.triangle")
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Picker("Key", selection: $selectedKeyID) {
+                            ForEach(keyStore.keys) { key in
+                                Text(key.label).tag(Optional(key.id))
+                            }
                         }
                     }
                 }
                 Section("Authenticate once with a password") {
                     SecureField("Password for \(host.username)@\(host.hostname)", text: $password)
+                        .focused($isPasswordFocused)
+                        .submitLabel(.go)
+                        .onSubmit {
+                            guard selectedKeyID != nil, !password.isEmpty, !isWorking else { return }
+                            Task { await copyKey() }
+                        }
                 }
                 Section {
                     Button {
@@ -53,6 +65,7 @@ struct CopyKeyToServerView: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Close") { dismiss() }
+                        .keyboardShortcut(.cancelAction)
                 }
             }
             .onAppear {
@@ -74,7 +87,7 @@ struct CopyKeyToServerView: View {
         }
 
         do {
-            let material = try keyStore.privateKeyMaterial(for: key)
+            let material = try keyStore.privateKeyMaterial(for: key, reason: "authenticate to copy \u{201C}\(key.label)\u{201D} to \u{201C}\(host.nickname)\u{201D}")
             try await SSHCopyID.copyKey(
                 publicKeyOpenSSH: key.publicKeyOpenSSH,
                 material: material,

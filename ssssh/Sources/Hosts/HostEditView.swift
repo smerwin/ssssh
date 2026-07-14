@@ -17,6 +17,11 @@ struct HostEditView: View {
     @State private var startupCommand = ""
     @State private var errorMessage: String?
 
+    private enum Field: Hashable {
+        case nickname, hostname, port, username, startupCommand
+    }
+    @FocusState private var focusedField: Field?
+
     init(existingHost: SSHHost? = nil) {
         self.existingHost = existingHost
         if let existingHost {
@@ -34,19 +39,31 @@ struct HostEditView: View {
             Form {
                 Section("Host") {
                     TextField("Nickname (e.g. home server)", text: $nickname)
+                        .focused($focusedField, equals: .nickname)
+                        .submitLabel(.next)
+                        .onSubmit { focusedField = .hostname }
                     TextField("Hostname or IP", text: $hostname)
                         #if os(iOS)
                         .textInputAutocapitalization(.never)
                         .keyboardType(.URL)
                         #endif
+                        .focused($focusedField, equals: .hostname)
+                        .submitLabel(.next)
+                        .onSubmit { focusedField = .port }
                     TextField("Port", text: $port)
                         #if os(iOS)
                         .keyboardType(.numberPad)
                         #endif
+                        .focused($focusedField, equals: .port)
+                        .submitLabel(.next)
+                        .onSubmit { focusedField = .username }
                     TextField("Username", text: $username)
                         #if os(iOS)
                         .textInputAutocapitalization(.never)
                         #endif
+                        .focused($focusedField, equals: .username)
+                        .submitLabel(.next)
+                        .onSubmit { focusedField = .startupCommand }
                 }
                 Section("Authentication") {
                     Picker("Key", selection: $keyID) {
@@ -61,6 +78,9 @@ struct HostEditView: View {
                         #if os(iOS)
                         .textInputAutocapitalization(.never)
                         #endif
+                        .focused($focusedField, equals: .startupCommand)
+                        .submitLabel(.done)
+                        .onSubmit { save() }
                 }
                 if let errorMessage {
                     Text(errorMessage).foregroundStyle(.red)
@@ -70,9 +90,11 @@ struct HostEditView: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }
+                        .keyboardShortcut(.cancelAction)
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Save") { save() }
+                        .keyboardShortcut(.defaultAction)
                         .disabled(nickname.trimmingCharacters(in: .whitespaces).isEmpty || hostname.trimmingCharacters(in: .whitespaces).isEmpty || username.trimmingCharacters(in: .whitespaces).isEmpty)
                 }
             }
