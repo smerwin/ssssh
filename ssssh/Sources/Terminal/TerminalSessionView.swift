@@ -52,11 +52,26 @@ struct TerminalSessionView: View {
 
             switch connection.state {
             case .connecting:
-                StatusBanner(text: "Connecting…", tint: SwiftUI.Color.secondary)
+                StatusBanner(tint: SwiftUI.Color.secondary) {
+                    Text("Connecting…")
+                }
             case .failed(let message):
-                StatusBanner(text: message, tint: SwiftUI.Color.red)
+                StatusBanner(tint: SwiftUI.Color.red) {
+                    Text(message)
+                }
             case .disconnected:
-                StatusBanner(text: "Disconnected", tint: SwiftUI.Color.secondary)
+                StatusBanner(tint: SwiftUI.Color.secondary) {
+                    Text("Disconnected")
+                }
+            case .waitingToReconnect(let date):
+                // `Text(_:style:.timer)` counts down to `date` on its own,
+                // no manual `Timer` needed -- so the banner shows exactly
+                // how long until the next auto-reconnect attempt instead of
+                // sitting on a static "Disconnected" with no sign anything
+                // is going to happen.
+                StatusBanner(tint: SwiftUI.Color.secondary) {
+                    Text("Reconnecting in ") + Text(date, style: .timer)
+                }
             case .connected:
                 EmptyView()
             }
@@ -92,19 +107,21 @@ struct TerminalSessionView: View {
             message = "Disconnected from \(connection.host.nickname)"
         case .failed(let reason):
             message = "Connection to \(connection.host.nickname) failed: \(reason)"
+        case .waitingToReconnect:
+            message = "Reconnecting to \(connection.host.nickname)"
         }
         guard let message else { return }
         UIAccessibility.post(notification: .announcement, argument: message)
     }
 }
 
-private struct StatusBanner: View {
-    let text: String
+private struct StatusBanner<Content: View>: View {
     let tint: SwiftUI.Color
+    @ViewBuilder let content: Content
 
     var body: some View {
         VStack {
-            Text(text)
+            content
                 .font(.footnote)
                 .padding(.horizontal, 12)
                 .padding(.vertical, 6)
