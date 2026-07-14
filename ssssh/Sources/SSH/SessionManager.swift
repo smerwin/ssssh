@@ -2,9 +2,12 @@ import Foundation
 import Observation
 
 /// Keeps SSH connections alive independent of which view is on screen, so a
-/// terminal session survives navigation and backgrounding. One connection
-/// per host is kept; reopening a host's session reuses the existing
-/// connection instead of reconnecting.
+/// terminal session survives navigation and backgrounding. `session(for:)`
+/// keeps one *primary* connection per host and reuses it on repeat opens;
+/// `newSession(for:)` always opens an additional, independent connection to
+/// the same host, regardless of any existing one's state -- e.g. to rescue
+/// a session that's stuck on a hung connection without having to tear the
+/// original down first.
 @MainActor
 @Observable
 final class SessionManager {
@@ -25,6 +28,11 @@ final class SessionManager {
             }
             return existing
         }
+        return newSession(for: host)
+    }
+
+    @discardableResult
+    func newSession(for host: SSHHost) -> SSHConnection {
         let connection = makeConnection(for: host)
         sessions.append(connection)
         connection.connect(keyStore: keyStore, hostKeyStore: hostKeyStore)

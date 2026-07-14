@@ -12,6 +12,7 @@ struct HostListView: View {
     @State private var copyKeyHost: SSHHost?
     @State private var hostPendingDeletion: SSHHost?
     @State private var hostPendingForgetKey: SSHHost?
+    @State private var pendingNewSession: SSHConnection?
 
     var body: some View {
         NavigationStack {
@@ -48,6 +49,16 @@ struct HostListView: View {
                         .tint(.blue)
                     }
                     .contextMenu {
+                        // Unlike tapping the row (which reuses the host's
+                        // existing session via `session(for:)`), this always
+                        // opens a second, independent connection -- the way
+                        // to rescue a session that's stuck on a hung
+                        // connection without tearing the original down.
+                        Button {
+                            pendingNewSession = sessionManager.newSession(for: host)
+                        } label: {
+                            Label("New Session", systemImage: "plus.rectangle.on.rectangle")
+                        }
                         Button {
                             copyKeyHost = host
                         } label: {
@@ -76,6 +87,9 @@ struct HostListView: View {
             .navigationTitle("Hosts")
             .navigationDestination(for: SSHHost.self) { host in
                 TerminalSessionView(connection: sessionManager.session(for: host))
+            }
+            .navigationDestination(item: $pendingNewSession) { session in
+                TerminalSessionView(connection: session)
             }
             .toolbar {
                 ToolbarItem(placement: .primaryAction) {
