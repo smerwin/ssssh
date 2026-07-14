@@ -153,13 +153,13 @@ final class SSHConnection: Identifiable, Hashable, @unchecked Sendable {
     }
 
     func connect(keyStore: KeyStore, hostKeyStore: HostKeyStore) {
-        // `state != .connecting` (on top of the `network.client == nil`
-        // check) closes a race where a manual/foreground reconnect and
-        // `reconnectWithBackoff`'s own delayed call both land while a
-        // handshake is already in flight -- `network.client` isn't set
-        // until that handshake succeeds, so without this a second
-        // `runSession` could start concurrently with the first.
-        guard network.client == nil, state != .connecting else { return }
+        guard network.client == nil else { return }
+        // Cancelling any pending backoff wait here (rather than just in
+        // `reconnectWithBackoff`'s own delayed closure) is what actually
+        // prevents a manual/foreground reconnect from racing that delayed
+        // call: `Task.sleep` responds to cancellation immediately, so this
+        // guarantees the backoff's own `connect()` call never fires once a
+        // real one has already started.
         reconnectTask?.cancel()
         reconnectTask = nil
         userInitiatedClose = false
