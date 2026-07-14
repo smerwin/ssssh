@@ -1,3 +1,5 @@
+https://testflight.apple.com/join/zBxYGV9y
+
 # ssssh
 
 smerwin's simple ssh — a minimal, native SSH client for iPhone and iPad.
