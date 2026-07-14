@@ -68,6 +68,7 @@
 		23105F08F97DDBB7D82EC0D0 /* PaywallView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PaywallView.swift; sourceTree = "<group>"; };
 		23E37953DBEC62F4E6A8BB08 /* TerminalSessionView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalSessionView.swift; sourceTree = "<group>"; };
 		32D7D71D0263115B3919B465 /* KeyStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyStore.swift; sourceTree = "<group>"; };
+		3AEC1DA09DDD2E184B74495F /* ci_post_clone.sh */ = {isa = PBXFileReference; lastKnownFileType = text.script.sh; path = ci_post_clone.sh; sourceTree = "<group>"; };
 		4A78C686CE53EFE2F7F711D9 /* ssssh.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = ssssh.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		50ABEE6C258CD87110CA52A4 /* PurchaseManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PurchaseManager.swift; sourceTree = "<group>"; };
 		572153F23C6A8561229486FA /* TerminalViewStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalViewStoreTests.swift; sourceTree = "<group>"; };
@@ -143,6 +144,14 @@
 			name = Products;
 			sourceTree = "<group>";
 		};
+		3368681A470BD59E4629E8FE /* ci_scripts */ = {
+			isa = PBXGroup;
+			children = (
+				3AEC1DA09DDD2E184B74495F /* ci_post_clone.sh */,
+			);
+			path = ci_scripts;
+			sourceTree = "<group>";
+		};
 		4ED37474EBF768BF33619DB1 /* Common */ = {
 			isa = PBXGroup;
 			children = (
@@ -207,6 +216,7 @@
 			isa = PBXGroup;
 			children = (
 				1680FFEB9535E2990D9F1EB9 /* PRIVACY.md */,
+				3368681A470BD59E4629E8FE /* ci_scripts */,
 				9C8B51CC28F204BF3AEEEA89 /* ssssh */,
 				10ECED29E768D1B2D98FC288 /* Products */,
 			);
@@ -555,6 +565,7 @@
 				SWIFT_STRICT_CONCURRENCY = complete;
 				SWIFT_VERSION = 6.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
+				VERSIONING_SYSTEM = "apple-generic";
 			};
 			name = Debug;
 		};
@@ -617,6 +628,7 @@
 				SWIFT_STRICT_CONCURRENCY = complete;
 				SWIFT_VERSION = 6.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
+				VERSIONING_SYSTEM = "apple-generic";
 			};
 			name = Release;
 		};

@@ -16,11 +16,13 @@ settings:
     ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
     MARKETING_VERSION: "0.1.0"
     CURRENT_PROJECT_VERSION: "2"
+    VERSIONING_SYSTEM: apple-generic
     TARGETED_DEVICE_FAMILY: "1,2"
 
 fileGroups:
   - ssssh/Products.storekit
   - PRIVACY.md
+  - ci_scripts
 
 packages:
   SwiftTerm:
@@ -45,6 +47,8 @@ targets:
     info:
       path: ssssh/Sources/App/Info.plist
       properties:
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
         UILaunchScreen: {}
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
@@ -56,6 +60,7 @@ targets:
           - UIInterfaceOrientationLandscapeLeft
           - UIInterfaceOrientationLandscapeRight
         NSFaceIDUsageDescription: "ssssh uses Face ID to protect access to your private SSH keys."
+        NSLocalNetworkUsageDescription: "ssssh connects to SSH servers on your local network."
         ITSAppUsesNonExemptEncryption: false
     settings:
       base:
