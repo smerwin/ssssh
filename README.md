@@ -1,4 +1,6 @@
-https://testflight.apple.com/join/zBxYGV9y
+[<img src="ssssh/Resources/Assets.xcassets/AppIcon.appiconset/AppIcon-180.png" width="100" alt="ssssh app icon" />](https://testflight.apple.com/join/zBxYGV9y)
+
+### [Join the beta now →](https://testflight.apple.com/join/zBxYGV9y)
 
 # ssssh
 
