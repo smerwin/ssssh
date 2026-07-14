@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		01FB36750E184974DAB9959D /* KeyImporter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7E73836E334216FB734F29B0 /* KeyImporter.swift */; };
 		0B2BAF96DEE671D53D1A52CB /* TerminalSessionView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 23E37953DBEC62F4E6A8BB08 /* TerminalSessionView.swift */; };
 		10AC4367104585882C45F100 /* SSHHost.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7EBF63CEE0F3D7B402553292 /* SSHHost.swift */; };
 		1335786151BC0EFB30F2D43C /* HostKeyStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8DDB708C5F5E8FDB459230F8 /* HostKeyStoreTests.swift */; };
@@ -29,6 +30,7 @@
 		6CA528725BEFA535112C9DBD /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 01200017DA38268C82D14B57 /* Assets.xcassets */; };
 		6EC63CD26F373F22161118AE /* SSHKey.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9B3FF6CF3D93F6D67E8B68E6 /* SSHKey.swift */; };
 		70AC336969ADFB2A3ECDCC27 /* KeyGenerator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5990039A616CCFE7DA20BB2C /* KeyGenerator.swift */; };
+		77C0E92544ECE99B9B16D4AF /* KeyImporterTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 337239C4F71A21FD8571B2E2 /* KeyImporterTests.swift */; };
 		7B8DC00D3DB20A77F3CD2D4D /* Citadel in Frameworks */ = {isa = PBXBuildFile; productRef = B10689002FBF7F957BE3D206 /* Citadel */; };
 		7CF897499628942477EF597F /* KeyDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 11030446A2958F1F5044A3B8 /* KeyDetailView.swift */; };
 		7E4773207D5666196B8748D7 /* TerminalThemeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 74E4F30C6E089EAD737925CC /* TerminalThemeTests.swift */; };
@@ -77,6 +79,7 @@
 		23105F08F97DDBB7D82EC0D0 /* PaywallView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PaywallView.swift; sourceTree = "<group>"; };
 		23E37953DBEC62F4E6A8BB08 /* TerminalSessionView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalSessionView.swift; sourceTree = "<group>"; };
 		32D7D71D0263115B3919B465 /* KeyStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyStore.swift; sourceTree = "<group>"; };
+		337239C4F71A21FD8571B2E2 /* KeyImporterTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyImporterTests.swift; sourceTree = "<group>"; };
 		3AEC1DA09DDD2E184B74495F /* ci_post_clone.sh */ = {isa = PBXFileReference; lastKnownFileType = text.script.sh; path = ci_post_clone.sh; sourceTree = "<group>"; };
 		4A78C686CE53EFE2F7F711D9 /* ssssh.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = ssssh.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		50ABEE6C258CD87110CA52A4 /* PurchaseManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PurchaseManager.swift; sourceTree = "<group>"; };
@@ -90,6 +93,7 @@
 		72B2BCF32B9D9DD901992B68 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		74058F678E0956FA4C650783 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		74E4F30C6E089EAD737925CC /* TerminalThemeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalThemeTests.swift; sourceTree = "<group>"; };
+		7E73836E334216FB734F29B0 /* KeyImporter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyImporter.swift; sourceTree = "<group>"; };
 		7EBF63CEE0F3D7B402553292 /* SSHHost.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SSHHost.swift; sourceTree = "<group>"; };
 		896F10A3A80169241CAF0C10 /* SessionsListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionsListView.swift; sourceTree = "<group>"; };
 		8DDB708C5F5E8FDB459230F8 /* HostKeyStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostKeyStoreTests.swift; sourceTree = "<group>"; };
@@ -216,6 +220,7 @@
 				8DDB708C5F5E8FDB459230F8 /* HostKeyStoreTests.swift */,
 				E83B2F451E477D4BE69A1E48 /* HostStoreTests.swift */,
 				F4BE79AA6A7E1F4C665B6452 /* KeyGeneratorTests.swift */,
+				337239C4F71A21FD8571B2E2 /* KeyImporterTests.swift */,
 				65C268E95639474C9F86C299 /* KeyStoreTests.swift */,
 				9C1DCCFA42095665E2E964B5 /* SessionManagerTests.swift */,
 				F38F86FED26BE21AC974655A /* SSHConnectionStateTests.swift */,
@@ -257,6 +262,7 @@
 			children = (
 				11030446A2958F1F5044A3B8 /* KeyDetailView.swift */,
 				5990039A616CCFE7DA20BB2C /* KeyGenerator.swift */,
+				7E73836E334216FB734F29B0 /* KeyImporter.swift */,
 				D17F6968593C6CDF7F4CFB1B /* KeyListView.swift */,
 				32D7D71D0263115B3919B465 /* KeyStore.swift */,
 				A64C9DE84719618DC3BA55D4 /* SSHPrivateKeyMaterial.swift */,
@@ -411,6 +417,7 @@
 				5BC421170EA3E3A0513E95C5 /* HostStore.swift in Sources */,
 				7CF897499628942477EF597F /* KeyDetailView.swift in Sources */,
 				70AC336969ADFB2A3ECDCC27 /* KeyGenerator.swift in Sources */,
+				01FB36750E184974DAB9959D /* KeyImporter.swift in Sources */,
 				964627D0EEDBA09475E66146 /* KeyListView.swift in Sources */,
 				59330FA2F340DB8B21D9D03E /* KeyStore.swift in Sources */,
 				5312287D9B46A14EDC277640 /* Keychain.swift in Sources */,
@@ -442,6 +449,7 @@
 				1335786151BC0EFB30F2D43C /* HostKeyStoreTests.swift in Sources */,
 				86BF41EA14F33560DF1D7C54 /* HostStoreTests.swift in Sources */,
 				E96EEAB924CB443436EB6723 /* KeyGeneratorTests.swift in Sources */,
+				77C0E92544ECE99B9B16D4AF /* KeyImporterTests.swift in Sources */,
 				454B6EB4C4C67E640F2E8193 /* KeyStoreTests.swift in Sources */,
 				FC9E1D71FF618A0E83570671 /* SSHConnectionStateTests.swift in Sources */,
 				DB11D13B8EE7A206C19AB234 /* SSHKeyTests.swift in Sources */,

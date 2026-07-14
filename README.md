@@ -166,8 +166,9 @@ worth knowing before relying on them:
 
 - **No passphrase support** on generated private keys, on top of Keychain
   protection.
-- **No RSA import.** The algorithm case exists in the data model; there's
-  no UI to paste/import an existing key of any kind.
+- **No RSA or ECDSA import**, only Ed25519 (Keys tab > New Key > Import
+  Key, file-picker only -- no paste). See CLAUDE.md for why RSA/ECDSA
+  import isn't a small addition.
 - **No rectangular text selection** in the terminal.
 
 ## Building locally

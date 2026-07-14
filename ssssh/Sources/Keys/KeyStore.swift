@@ -17,7 +17,17 @@ final class KeyStore {
     }
 
     func generateKey(label: String, algorithm: SSHKeyAlgorithm = .ed25519) throws -> SSHKey {
-        let generated = KeyGenerator.generate(algorithm: algorithm, comment: label)
+        try persist(KeyGenerator.generate(algorithm: algorithm, comment: label), label: label)
+    }
+
+    /// Imports an existing Ed25519 private key (see `KeyImporter`) and
+    /// stores it exactly the way a generated one is -- Keychain-protected,
+    /// indistinguishable from a generated key from this point on.
+    func importKey(label: String, fileContents: Data, passphrase: String) throws -> SSHKey {
+        try persist(try KeyImporter.importEd25519(fileContents: fileContents, passphrase: passphrase, comment: label), label: label)
+    }
+
+    private func persist(_ generated: KeyGenerator.GeneratedKey, label: String) throws -> SSHKey {
         let key = SSHKey(
             id: UUID(),
             label: label,
