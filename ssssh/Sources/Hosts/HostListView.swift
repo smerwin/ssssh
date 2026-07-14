@@ -141,15 +141,17 @@ struct HostListView: View {
             } message: { host in
                 Text("\"\(host.nickname)\" will be removed from ssssh. You can add it again later.")
             }
-            .confirmationDialog(
+            .alert(
                 "Forget Known Host Key",
                 isPresented: Binding(
                     get: { hostPendingForgetKey != nil },
                     set: { if !$0 { hostPendingForgetKey = nil } }
                 ),
-                titleVisibility: .visible,
                 presenting: hostPendingForgetKey
             ) { host in
+                Button("Cancel", role: .cancel) {
+                    hostPendingForgetKey = nil
+                }
                 Button("Forget Known Host Key", role: .destructive) {
                     hostKeyStore.forget(hostID: host.id)
                     hostPendingForgetKey = nil
