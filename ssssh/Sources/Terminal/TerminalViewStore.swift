@@ -48,6 +48,20 @@ final class TerminalSessionController: NSObject, TerminalViewDelegate {
         _ = view.becomeFirstResponder()
     }
 
+    /// Toolbar-button fallback for showing/hiding the keyboard. The swipe
+    /// gestures above are unreachable under VoiceOver -- single-finger
+    /// swipes are reserved system-wide for VoiceOver's own navigation, and
+    /// SwiftTerm's own view already repurposes vertical swipes for
+    /// line-by-line reading -- so this gives every user, VoiceOver or not,
+    /// a real control to fall back on.
+    @MainActor func toggleKeyboard() {
+        if view.isFirstResponder {
+            _ = view.resignFirstResponder()
+        } else {
+            _ = view.becomeFirstResponder()
+        }
+    }
+
     func send(source: SwiftTerm.TerminalView, data: ArraySlice<UInt8>) {
         let bytes = Array(data)
         Task { @MainActor [weak connection] in
@@ -96,6 +110,10 @@ final class TerminalViewStore {
         let controller = TerminalSessionController(connection: connection)
         controllers[connection.id] = controller
         return controller
+    }
+
+    func toggleKeyboard(for connection: SSHConnection) {
+        controller(for: connection).toggleKeyboard()
     }
 
     /// Drops controllers for sessions `SessionManager` no longer knows about, so a

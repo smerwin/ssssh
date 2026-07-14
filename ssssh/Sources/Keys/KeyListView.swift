@@ -5,16 +5,19 @@ struct KeyListView: View {
     @Environment(PurchaseManager.self) private var purchaseManager
     @State private var isPresentingGenerator = false
     @State private var isPresentingPaywall = false
+    @State private var keyPendingDeletion: SSHKey?
 
     var body: some View {
         NavigationStack {
             List {
                 if keyStore.keys.isEmpty {
-                    ContentUnavailableView(
-                        "No Keys Yet",
-                        systemImage: "key",
-                        description: Text("Generate a key to get started.")
-                    )
+                    ContentUnavailableView {
+                        Label("No Keys Yet", systemImage: "key")
+                    } description: {
+                        Text("Generate a key to get started.")
+                    } actions: {
+                        Button("Generate Key") { isPresentingGenerator = true }
+                    }
                 }
                 ForEach(keyStore.keys) { key in
                     NavigationLink(value: key) {
@@ -25,10 +28,12 @@ struct KeyListView: View {
                                 .foregroundStyle(.secondary)
                         }
                     }
-                }
-                .onDelete { offsets in
-                    for index in offsets {
-                        try? keyStore.delete(keyStore.keys[index])
+                    .swipeActions(edge: .trailing) {
+                        Button(role: .destructive) {
+                            keyPendingDeletion = key
+                        } label: {
+                            Label("Delete", systemImage: "trash")
+                        }
                     }
                 }
             }
@@ -55,6 +60,26 @@ struct KeyListView: View {
             .sheet(isPresented: $isPresentingPaywall) {
                 PaywallView()
             }
+            .confirmationDialog(
+                "Delete Key",
+                isPresented: Binding(
+                    get: { keyPendingDeletion != nil },
+                    set: { if !$0 { keyPendingDeletion = nil } }
+                ),
+                titleVisibility: .visible,
+                presenting: keyPendingDeletion
+            ) { key in
+                Button("Delete", role: .destructive) {
+                    try? keyStore.delete(key)
+                    keyPendingDeletion = nil
+                }
+            } message: { key in
+                if key.deployedHostIDs.isEmpty {
+                    Text("\"\(key.label)\" will be permanently deleted with no backup. This cannot be undone.")
+                } else {
+                    Text("\"\(key.label)\" is deployed to \(key.deployedHostIDs.count) host(s) and will be permanently deleted with no backup. This cannot be undone.")
+                }
+            }
         }
     }
 }
@@ -66,6 +91,7 @@ private struct GenerateKeyView: View {
     @State private var label = ""
     @State private var algorithm: SSHKeyAlgorithm = .ed25519
     @State private var errorMessage: String?
+    @FocusState private var isLabelFocused: Bool
 
     var body: some View {
         NavigationStack {
@@ -75,6 +101,9 @@ private struct GenerateKeyView: View {
                         #if os(iOS)
                         .textInputAutocapitalization(.never)
                         #endif
+                        .focused($isLabelFocused)
+                        .submitLabel(.done)
+                        .onSubmit { generate() }
                 }
                 Section("Algorithm") {
                     Picker(selection: $algorithm) {
@@ -94,19 +123,24 @@ private struct GenerateKeyView: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }
+                        .keyboardShortcut(.cancelAction)
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Generate") {
-                        do {
-                            _ = try keyStore.generateKey(label: label, algorithm: algorithm)
-                            dismiss()
-                        } catch {
-                            errorMessage = error.localizedDescription
-                        }
-                    }
-                    .disabled(label.trimmingCharacters(in: .whitespaces).isEmpty)
+                    Button("Generate") { generate() }
+                        .keyboardShortcut(.defaultAction)
+                        .disabled(label.trimmingCharacters(in: .whitespaces).isEmpty)
                 }
             }
+        }
+    }
+
+    private func generate() {
+        guard !label.trimmingCharacters(in: .whitespaces).isEmpty else { return }
+        do {
+            _ = try keyStore.generateKey(label: label, algorithm: algorithm)
+            dismiss()
+        } catch {
+            errorMessage = error.localizedDescription
         }
     }
 }

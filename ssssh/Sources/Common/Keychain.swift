@@ -47,9 +47,13 @@ enum Keychain {
 
     /// Loads `tag`'s data, prompting for Face ID/Touch ID (or the device
     /// passcode) via `context` -- required because `save` protects the item
-    /// with `kSecAttrAccessControl`.
-    static func load(tag: String, context: LAContext = LAContext()) throws -> Data {
-        context.localizedReason = "authenticate to use this SSH key"
+    /// with `kSecAttrAccessControl`. `reason` surfaces directly in that
+    /// system prompt, so callers should pass something specific (e.g. which
+    /// host this is for) rather than relying on the generic default --
+    /// otherwise an unattended auto-reconnect's Face ID prompt gives the
+    /// user no context for why it's appearing.
+    static func load(tag: String, reason: String = "authenticate to use this SSH key", context: LAContext = LAContext()) throws -> Data {
+        context.localizedReason = reason
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrAccount as String: tag,

@@ -10,16 +10,20 @@ struct HostListView: View {
     @State private var isPresentingPaywall = false
     @State private var editingHost: SSHHost?
     @State private var copyKeyHost: SSHHost?
+    @State private var hostPendingDeletion: SSHHost?
+    @State private var hostPendingForgetKey: SSHHost?
 
     var body: some View {
         NavigationStack {
             List {
                 if hostStore.hosts.isEmpty {
-                    ContentUnavailableView(
-                        "No Hosts Yet",
-                        systemImage: "server.rack",
-                        description: Text("Add a host to connect to.")
-                    )
+                    ContentUnavailableView {
+                        Label("No Hosts Yet", systemImage: "server.rack")
+                    } description: {
+                        Text("Add a host to connect to. If you haven't generated a key yet, visit the Keys tab first.")
+                    } actions: {
+                        Button("Add Host") { isPresentingAddHost = true }
+                    }
                 }
                 ForEach(hostStore.hosts) { host in
                     NavigationLink(value: host) {
@@ -32,7 +36,7 @@ struct HostListView: View {
                     }
                     .swipeActions(edge: .trailing) {
                         Button(role: .destructive) {
-                            try? hostStore.delete(host)
+                            hostPendingDeletion = host
                         } label: {
                             Label("Delete", systemImage: "trash")
                         }
@@ -56,13 +60,13 @@ struct HostListView: View {
                         }
                         if hostKeyStore.fingerprint(for: host.id) != nil {
                             Button(role: .destructive) {
-                                hostKeyStore.forget(hostID: host.id)
+                                hostPendingForgetKey = host
                             } label: {
                                 Label("Forget Known Host Key", systemImage: "exclamationmark.triangle")
                             }
                         }
                         Button(role: .destructive) {
-                            try? hostStore.delete(host)
+                            hostPendingDeletion = host
                         } label: {
                             Label("Delete", systemImage: "trash")
                         }
@@ -97,6 +101,38 @@ struct HostListView: View {
             }
             .sheet(isPresented: $isPresentingPaywall) {
                 PaywallView()
+            }
+            .confirmationDialog(
+                "Delete Host",
+                isPresented: Binding(
+                    get: { hostPendingDeletion != nil },
+                    set: { if !$0 { hostPendingDeletion = nil } }
+                ),
+                titleVisibility: .visible,
+                presenting: hostPendingDeletion
+            ) { host in
+                Button("Delete", role: .destructive) {
+                    try? hostStore.delete(host)
+                    hostPendingDeletion = nil
+                }
+            } message: { host in
+                Text("\"\(host.nickname)\" will be removed from ssssh. You can add it again later.")
+            }
+            .confirmationDialog(
+                "Forget Known Host Key",
+                isPresented: Binding(
+                    get: { hostPendingForgetKey != nil },
+                    set: { if !$0 { hostPendingForgetKey = nil } }
+                ),
+                titleVisibility: .visible,
+                presenting: hostPendingForgetKey
+            ) { host in
+                Button("Forget Known Host Key", role: .destructive) {
+                    hostKeyStore.forget(hostID: host.id)
+                    hostPendingForgetKey = nil
+                }
+            } message: { host in
+                Text("The next connection to \"\(host.nickname)\" will trust whatever host key the server presents, with no warning if it has changed since you last connected. Only do this if you know the server was legitimately reinstalled or had its key rotated.")
             }
         }
     }

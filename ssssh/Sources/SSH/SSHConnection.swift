@@ -138,7 +138,7 @@ final class SSHConnection: Identifiable, Hashable, @unchecked Sendable {
 
         let material: SSHPrivateKeyMaterial
         do {
-            material = try keyStore.privateKeyMaterial(for: key)
+            material = try keyStore.privateKeyMaterial(for: key, reason: "authenticate to connect to \u{201C}\(host.nickname)\u{201D}")
         } catch {
             state = .failed(error.localizedDescription)
             return

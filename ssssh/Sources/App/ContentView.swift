@@ -3,10 +3,15 @@ import SwiftUI
 struct ContentView: View {
     @Environment(\.scenePhase) private var scenePhase
     @Environment(SessionManager.self) private var sessionManager
+    @Environment(\.colorSchemeContrast) private var colorSchemeContrast
     @AppStorage(AppSettingsKeys.terminalTheme) private var themeRawValue = TerminalTheme.crtGreen.rawValue
 
+    /// Mirrors `TerminalSessionView`'s theme-resolution logic so the tab
+    /// bar's tint stays consistent with the terminal when iOS's own
+    /// Increase Contrast setting overrides the user's manual theme choice.
     private var theme: TerminalTheme {
-        TerminalTheme(rawValue: themeRawValue) ?? .crtGreen
+        let stored = TerminalTheme(rawValue: themeRawValue) ?? .crtGreen
+        return colorSchemeContrast == .increased ? .highContrast : stored
     }
 
     var body: some View {

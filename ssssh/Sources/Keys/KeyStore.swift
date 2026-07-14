@@ -39,8 +39,11 @@ final class KeyStore {
     }
 
     /// Reconstitutes the private key material for authenticating with `key`.
-    func privateKeyMaterial(for key: SSHKey) throws -> SSHPrivateKeyMaterial {
-        let data = try Keychain.load(tag: key.keychainTag)
+    /// `reason` is shown in the Face ID/passcode prompt Keychain access
+    /// triggers -- pass something specific (e.g. the host being connected
+    /// to) so an unattended auto-reconnect's prompt isn't a mystery.
+    func privateKeyMaterial(for key: SSHKey, reason: String? = nil) throws -> SSHPrivateKeyMaterial {
+        let data = try Keychain.load(tag: key.keychainTag, reason: reason ?? "authenticate to use \u{201C}\(key.label)\u{201D}")
         return try SSHPrivateKeyMaterial(algorithm: key.algorithm, rawRepresentation: data)
     }
 
