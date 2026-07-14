@@ -44,6 +44,8 @@ targets:
       # one that actually works.
       - path: ssssh/Resources/Assets.xcassets
         buildPhase: resources
+      - path: ssssh/Resources/PrivacyInfo.xcprivacy
+        buildPhase: resources
     info:
       path: ssssh/Sources/App/Info.plist
       properties:

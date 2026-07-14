@@ -13,6 +13,7 @@
 		1C238A3BEDE2C2FBEB99CD02 /* SSHConnection.swift in Sources */ = {isa = PBXBuildFile; fileRef = C6F1F3497C6EAE8353915767 /* SSHConnection.swift */; };
 		2642117F49E98E090CC06422 /* TerminalTheme.swift in Sources */ = {isa = PBXBuildFile; fileRef = DB5762D5CFBEF2BCFFBA74A2 /* TerminalTheme.swift */; };
 		2AA164B80BDC45B6130B692E /* TerminalViewStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 572153F23C6A8561229486FA /* TerminalViewStoreTests.swift */; };
+		2E8D30E256FA75AF3D8FC5BC /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 98B53E8FB86FC9EA82ED0377 /* PrivacyInfo.xcprivacy */; };
 		3769863565D3E3732F3DB7D5 /* TOFUHostKeyValidator.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2D93910C2DC860311054A08 /* TOFUHostKeyValidator.swift */; };
 		3EB6F45B46C155EED4B667A2 /* HostKeyFingerprint.swift in Sources */ = {isa = PBXBuildFile; fileRef = CA60E549D7F68D1D9CC615CD /* HostKeyFingerprint.swift */; };
 		499C5C7467200EB55682A40C /* HostListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F25E12243FCBF53A0F908138 /* HostListView.swift */; };
@@ -82,6 +83,7 @@
 		7EBF63CEE0F3D7B402553292 /* SSHHost.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SSHHost.swift; sourceTree = "<group>"; };
 		896F10A3A80169241CAF0C10 /* SessionsListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionsListView.swift; sourceTree = "<group>"; };
 		8DDB708C5F5E8FDB459230F8 /* HostKeyStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostKeyStoreTests.swift; sourceTree = "<group>"; };
+		98B53E8FB86FC9EA82ED0377 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		9B3FF6CF3D93F6D67E8B68E6 /* SSHKey.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SSHKey.swift; sourceTree = "<group>"; };
 		A1C12A2E6A2A31B6A04A647B /* sssshTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = sssshTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		A64C9DE84719618DC3BA55D4 /* SSHPrivateKeyMaterial.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SSHPrivateKeyMaterial.swift; sourceTree = "<group>"; };
@@ -131,6 +133,7 @@
 			isa = PBXGroup;
 			children = (
 				01200017DA38268C82D14B57 /* Assets.xcassets */,
+				98B53E8FB86FC9EA82ED0377 /* PrivacyInfo.xcprivacy */,
 			);
 			path = Resources;
 			sourceTree = "<group>";
@@ -361,6 +364,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				6CA528725BEFA535112C9DBD /* Assets.xcassets in Resources */,
+				2E8D30E256FA75AF3D8FC5BC /* PrivacyInfo.xcprivacy in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
