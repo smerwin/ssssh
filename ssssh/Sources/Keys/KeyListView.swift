@@ -71,15 +71,24 @@ struct KeyListView: View {
             .sheet(isPresented: $isPresentingPaywall) {
                 PaywallView()
             }
-            .confirmationDialog(
+            // .alert instead of .confirmationDialog: a confirmationDialog
+            // renders as a popover with a tail pointing at its (here,
+            // ambiguous) anchor on iPad, and only gets a Cancel button for
+            // free if no button you supply has role .cancel. .alert is a
+            // plain centered modal on every device -- no tail -- and needs
+            // an explicit Cancel button either way, which keeps that
+            // behavior obvious rather than incidental.
+            .alert(
                 "Delete Key",
                 isPresented: Binding(
                     get: { keyPendingDeletion != nil },
                     set: { if !$0 { keyPendingDeletion = nil } }
                 ),
-                titleVisibility: .visible,
                 presenting: keyPendingDeletion
             ) { key in
+                Button("Cancel", role: .cancel) {
+                    keyPendingDeletion = nil
+                }
                 Button("Delete", role: .destructive) {
                     try? keyStore.delete(key)
                     keyPendingDeletion = nil
