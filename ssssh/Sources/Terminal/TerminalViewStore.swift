@@ -22,38 +22,41 @@ final class TerminalSessionController: NSObject, TerminalViewDelegate {
             view?.feed(byteArray: bytes[...])
         }
 
-        // Swipe down to dismiss the keyboard and use the freed-up space as a
-        // taller terminal; swipe up to bring the keyboard back. Allowed to
-        // recognize alongside the scroll view's own pan gesture so a quick
-        // swipe isn't swallowed by scrolling.
+        // Swipe down to page up through scrollback (or, inside an
+        // alternate-buffer app like vim/less, forward the real page-up key
+        // -- see `TerminalView.pageUp`); swipe up to page back down toward
+        // the live output. A discrete one-shot jump is worth having
+        // alongside `TerminalView`'s own drag-to-scroll (it's a
+        // `UIScrollView`) the same way page-up/page-down keys are worth
+        // having alongside a mouse wheel. Allowed to recognize alongside
+        // that pan gesture so a quick swipe isn't swallowed by scrolling.
         let swipeDelegate = SwipeSimultaneousRecognitionDelegate()
         self.swipeDelegate = swipeDelegate
 
-        let swipeDown = UISwipeGestureRecognizer(target: self, action: #selector(handleSwipeDown))
+        let swipeDown = UISwipeGestureRecognizer(target: self, action: #selector(handlePageUp))
         swipeDown.direction = .down
         swipeDown.delegate = swipeDelegate
         view.addGestureRecognizer(swipeDown)
 
-        let swipeUp = UISwipeGestureRecognizer(target: self, action: #selector(handleSwipeUp))
+        let swipeUp = UISwipeGestureRecognizer(target: self, action: #selector(handlePageDown))
         swipeUp.direction = .up
         swipeUp.delegate = swipeDelegate
         view.addGestureRecognizer(swipeUp)
     }
 
-    @objc @MainActor private func handleSwipeDown() {
-        _ = view.resignFirstResponder()
+    @objc @MainActor private func handlePageUp() {
+        view.pageUp()
     }
 
-    @objc @MainActor private func handleSwipeUp() {
-        _ = view.becomeFirstResponder()
+    @objc @MainActor private func handlePageDown() {
+        view.pageDown()
     }
 
-    /// Toolbar-button fallback for showing/hiding the keyboard. The swipe
-    /// gestures above are unreachable under VoiceOver -- single-finger
-    /// swipes are reserved system-wide for VoiceOver's own navigation, and
-    /// SwiftTerm's own view already repurposes vertical swipes for
-    /// line-by-line reading -- so this gives every user, VoiceOver or not,
-    /// a real control to fall back on.
+    /// Toolbar button for showing/hiding the keyboard -- the swipe
+    /// gestures above no longer do this (repurposed for scrollback
+    /// paging now that this button covers it), and it's the only way to
+    /// reach the toggle under VoiceOver regardless, since single-finger
+    /// swipes are reserved system-wide for VoiceOver's own navigation.
     @MainActor func toggleKeyboard() {
         if view.isFirstResponder {
             _ = view.resignFirstResponder()

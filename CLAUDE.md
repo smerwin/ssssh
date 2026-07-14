@@ -113,7 +113,9 @@ identifier syntax.
 - **SwiftTerm already uses single-finger double-tap internally** (for word
   selection). Don't add a second single-finger double-tap gesture recognizer
   on top of `TerminalView` -- it competes with SwiftTerm's own. This is why
-  the terminal's keyboard-hide gesture is swipe-only, not double-tap.
+  the terminal's scrollback-paging gesture (`TerminalSessionController`'s
+  swipe up/down, see `TerminalViewStore.swift`) is swipe-only, not
+  double-tap.
 - **`.ignoresSafeArea(edges: .bottom)` without specifying `regions:`
   ignores both the device's own safe area (home indicator) *and* the
   keyboard's safe area.** That second part is easy to miss and will make
