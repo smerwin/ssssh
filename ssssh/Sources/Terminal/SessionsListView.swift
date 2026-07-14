@@ -73,6 +73,7 @@ struct SessionsListView: View {
         case .connected: return "Connected"
         case .disconnected: return "Disconnected"
         case .failed(let message): return message
+        case .waitingToReconnect: return "Reconnecting…"
         }
     }
 
@@ -80,7 +81,7 @@ struct SessionsListView: View {
         let color: Color
         switch state {
         case .connected: color = .green
-        case .connecting: color = .yellow
+        case .connecting, .waitingToReconnect: color = .yellow
         case .disconnected, .failed: color = .red
         }
         return Circle().fill(color).frame(width: 8, height: 8)

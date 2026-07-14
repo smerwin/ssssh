@@ -1,4 +1,5 @@
 import Testing
+import Foundation
 @testable import ssssh
 
 /// `SessionManager.session(for:)` and `reconnectIfNeeded()` both key their
@@ -10,5 +11,6 @@ struct SSHConnectionStateTests {
         #expect(SSHConnection.State.connected.isDisconnectedOrFailed == false)
         #expect(SSHConnection.State.disconnected.isDisconnectedOrFailed == true)
         #expect(SSHConnection.State.failed("some error").isDisconnectedOrFailed == true)
+        #expect(SSHConnection.State.waitingToReconnect(at: .now).isDisconnectedOrFailed == true)
     }
 }
