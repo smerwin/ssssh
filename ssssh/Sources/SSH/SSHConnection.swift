@@ -49,10 +49,16 @@ final class SSHConnection: Identifiable, Hashable, @unchecked Sendable {
         case connected
         case disconnected
         case failed(String)
+        /// Between an unexpected drop and the next auto-reconnect attempt
+        /// `reconnectWithBackoff` has scheduled, holding the `Date` that
+        /// attempt will fire so the UI can show a live countdown instead of
+        /// sitting on a stale "Disconnected" banner for up to 30s with no
+        /// sign anything is going to happen.
+        case waitingToReconnect(at: Date)
 
         var isDisconnectedOrFailed: Bool {
             switch self {
-            case .disconnected, .failed: return true
+            case .disconnected, .failed, .waitingToReconnect: return true
             case .connecting, .connected: return false
             }
         }
@@ -91,6 +97,20 @@ final class SSHConnection: Identifiable, Hashable, @unchecked Sendable {
     /// close had never happened.
     private var connectTask: Task<Void, Never>?
 
+    /// Handle to the pending delay scheduled by `reconnectWithBackoff`, so a
+    /// `connect()` that arrives while it's still waiting (manual retry, the
+    /// app coming back to the foreground, the user reopening the session)
+    /// can cancel it instead of racing it -- without this, both the explicit
+    /// connect and the backoff's own delayed `connect()` call could end up
+    /// in flight at once.
+    private var reconnectTask: Task<Void, Never>?
+
+    /// Whether this connection has ever reached `.connected` before. Used
+    /// only to decide whether a given `runSession` run is a *reconnect*
+    /// (worth calling out in the scrollback) versus this session's very
+    /// first connect (nothing to announce -- the terminal is empty).
+    private var hasConnectedBefore = false
+
     /// Consecutive unexpected drops since the last successful connect,
     /// used to space out auto-reconnect attempts (`reconnectWithBackoff`)
     /// so a persistently broken host (revoked key, unreachable network)
@@ -110,8 +130,14 @@ final class SSHConnection: Identifiable, Hashable, @unchecked Sendable {
     func reconnectWithBackoff(keyStore: KeyStore, hostKeyStore: HostKeyStore) {
         let delay = Self.backoffDelay(forFailureCount: consecutiveFailureCount)
         consecutiveFailureCount += 1
-        Task {
+        state = .waitingToReconnect(at: Date.now.addingTimeInterval(Double(delay.components.seconds)))
+        reconnectTask = Task {
             try? await Task.sleep(for: delay)
+            // `Task.sleep` throws on cancellation, but that's swallowed by
+            // `try?` above -- without an explicit check here, cancelling
+            // `reconnectTask` (e.g. because `connect()` was called directly)
+            // wouldn't actually stop this delayed connect from firing too.
+            guard !Task.isCancelled else { return }
             // Don't revive a session the user explicitly closed while
             // this reconnect attempt was still waiting out its delay.
             guard !self.userInitiatedClose else { return }
@@ -128,7 +154,16 @@ final class SSHConnection: Identifiable, Hashable, @unchecked Sendable {
 
     func connect(keyStore: KeyStore, hostKeyStore: HostKeyStore) {
         guard network.client == nil else { return }
+        // Cancelling any pending backoff wait here (rather than just in
+        // `reconnectWithBackoff`'s own delayed closure) is what actually
+        // prevents a manual/foreground reconnect from racing that delayed
+        // call: `Task.sleep` responds to cancellation immediately, so this
+        // guarantees the backoff's own `connect()` call never fires once a
+        // real one has already started.
+        reconnectTask?.cancel()
+        reconnectTask = nil
         userInitiatedClose = false
+        let isReconnect = hasConnectedBefore
         state = .connecting
 
         guard let keyID = host.keyID, let key = keyStore.keys.first(where: { $0.id == keyID }) else {
@@ -148,7 +183,7 @@ final class SSHConnection: Identifiable, Hashable, @unchecked Sendable {
         let network = self.network
 
         connectTask = Task.detached { [weak self] in
-            await self?.runSession(host: host, material: material, hostKeyStore: hostKeyStore, network: network)
+            await self?.runSession(host: host, material: material, hostKeyStore: hostKeyStore, network: network, isReconnect: isReconnect)
         }
     }
 
@@ -158,7 +193,8 @@ final class SSHConnection: Identifiable, Hashable, @unchecked Sendable {
         host: SSHHost,
         material: SSHPrivateKeyMaterial,
         hostKeyStore: HostKeyStore,
-        network: SSHNetworkState
+        network: SSHNetworkState,
+        isReconnect: Bool
     ) async {
         // Clears the (now-dead) client/writer so a later `connect()` --
         // whether from auto-reconnect or the user retrying -- isn't
@@ -208,6 +244,23 @@ final class SSHConnection: Identifiable, Hashable, @unchecked Sendable {
             await MainActor.run { self.onOutput?(Array((line + "\r\n").utf8)) }
         }
 
+        // Unlike `emitDiagnostic`, this isn't gated by Verbose Connecting --
+        // it's not `ssh -v`-style detail, it's the one thing that must
+        // always be visible: new output is about to land in this session's
+        // scrollback that has nothing to do with whatever was on screen
+        // before. Scrollback is deliberately never cleared on reconnect
+        // (see CLAUDE.md), so without a marker like this a dropped
+        // connection reconnecting silently would make a brand new login
+        // banner just appear out of nowhere, mid-scrollback, with zero
+        // explanation. The leading "\r\n" also guarantees this (and
+        // whatever follows it) starts on its own fresh line even if the
+        // previous output didn't end in a newline.
+        if isReconnect {
+            await MainActor.run {
+                self.onOutput?(Array("\r\n[ssssh] Reconnecting to \u{201C}\(host.nickname)\u{201D}…\r\n".utf8))
+            }
+        }
+
         do {
             await emitDiagnostic("debug1: Connecting to \(host.hostname) port \(host.port).")
 
@@ -239,6 +292,7 @@ final class SSHConnection: Identifiable, Hashable, @unchecked Sendable {
             await MainActor.run {
                 self.state = .connected
                 self.consecutiveFailureCount = 0
+                self.hasConnectedBefore = true
             }
 
             let ptyRequest = SSHChannelRequestEvent.PseudoTerminalRequest(
@@ -302,6 +356,8 @@ final class SSHConnection: Identifiable, Hashable, @unchecked Sendable {
     func disconnect() {
         userInitiatedClose = true
         consecutiveFailureCount = 0
+        reconnectTask?.cancel()
+        reconnectTask = nil
         connectTask?.cancel()
         connectTask = nil
         let client = network.client

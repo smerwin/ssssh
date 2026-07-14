@@ -85,7 +85,10 @@ enum KeyGenerator {
     /// `rawField` controls whether `publicKeyBytes` is itself already a
     /// sequence of length-prefixed fields (ECDSA) or a single field that
     /// still needs a length prefix (Ed25519).
-    private static func openSSHLine(keyType: String, publicKeyBytes: Data, comment: String, rawField: Bool = false) -> String {
+    ///
+    /// Not private: `KeyImporter` reuses this to format an imported key's
+    /// public key line the same way a generated one's is formatted.
+    static func openSSHLine(keyType: String, publicKeyBytes: Data, comment: String, rawField: Bool = false) -> String {
         var blob = Data()
         blob.append(lengthPrefixed: Data(keyType.utf8))
         if rawField {

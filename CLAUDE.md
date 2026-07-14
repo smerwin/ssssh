@@ -113,7 +113,9 @@ identifier syntax.
 - **SwiftTerm already uses single-finger double-tap internally** (for word
   selection). Don't add a second single-finger double-tap gesture recognizer
   on top of `TerminalView` -- it competes with SwiftTerm's own. This is why
-  the terminal's keyboard-hide gesture is swipe-only, not double-tap.
+  the terminal's scrollback-paging gesture (`TerminalSessionController`'s
+  swipe up/down, see `TerminalViewStore.swift`) is swipe-only, not
+  double-tap.
 - **`.ignoresSafeArea(edges: .bottom)` without specifying `regions:`
   ignores both the device's own safe area (home indicator) *and* the
   keyboard's safe area.** That second part is easy to miss and will make
@@ -125,6 +127,47 @@ identifier syntax.
   options inside a `Form` `Section`. Give it `label: { EmptyView() }`
   instead of a string label; the `Section` header already provides
   context.
+
+## Importing RSA/ECDSA private keys (not implemented -- here's why)
+
+`KeyListView`'s import flow (`KeyImporter.swift`) only supports Ed25519,
+file-picker only (deliberately no paste field -- see the doc comment on
+`ImportKeyView`). RSA and ECDSA P-256/P-384 import were left out after
+investigating Citadel's public API, not just "nobody got to it yet" --
+here's the actual constraint, for whoever picks this up next:
+
+- **ECDSA P-256/P-384**: Citadel can *detect* these key types
+  (`SSHKeyDetection.detectPrivateKeyType`) but has no public initializer
+  to decode one into a `P256.Signing.PrivateKey`/`P384.Signing.PrivateKey`
+  the way it does for Ed25519
+  (`Curve25519.Signing.PrivateKey.init(sshEd25519:decryptionKey:)`).
+  You'd be writing an OpenSSH-private-key-format decoder for these curves
+  from scratch.
+- **RSA**: Citadel *can* decode a pasted/imported RSA key into a working
+  `Insecure.RSA.PrivateKey` (`init(sshRsa:decryptionKey:)`) -- enough to
+  authenticate with immediately -- but that type has no public way to get
+  the key back out as `Data`. Its actual material (`privateExponent`,
+  `modulus`, etc.) is stored as raw BoringSSL `BIGNUM` pointers marked
+  `internal` to Citadel, not `public`. So there's no way to serialize an
+  imported RSA key into the Keychain the way every other key in this app
+  is stored (`KeyStore.persist`, `Keychain.swift`) -- one raw-bytes blob,
+  one Face ID prompt, no passphrase ever re-entered after import.
+
+  Making RSA import "stick" across an app relaunch needs one of:
+  1. Store the *encrypted* key file itself plus its passphrase (a second
+     Keychain item), decrypting fresh on every use -- works, but it's a
+     real behavior difference from every other key in this app (two
+     stored secrets instead of one), and wants product buy-in before
+     building it.
+  2. Reach past Citadel's public API into its internal BoringSSL
+     plumbing, or write an OpenSSH-private-key-format parser from
+     scratch to get at the raw integers -- exactly the kind of
+     reinventing-crypto-parsing this app has otherwise avoided by
+     leaning on Citadel.
+
+  Neither was picked here. If you want RSA import, start by deciding
+  between those two, not by looking for a third way around Citadel --
+  there wasn't one as of Citadel 0.7.x.
 
 ## Concurrency architecture (why the SSH code looks the way it does)
 

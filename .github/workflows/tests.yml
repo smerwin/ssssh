@@ -1,0 +1,51 @@
+name: Tests
+
+# Gates PRs into main (see CLAUDE.md's git workflow section) on the test
+# suite passing. Also runs on pushes to main as a safety net for anything
+# merged without going through a PR.
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+jobs:
+  test:
+    name: Run test suite
+    runs-on: macos-15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Show selected Xcode version
+        run: xcodebuild -version
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        run: xcodegen generate
+
+      - name: Pick an available iPhone simulator
+        id: sim
+        run: |
+          DEVICE_NAME=$(xcrun simctl list devices available \
+            | grep -E '^\s+iPhone [0-9]+ \(' \
+            | head -1 \
+            | sed -E 's/^[[:space:]]+//; s/ \(.*//')
+          if [ -z "$DEVICE_NAME" ]; then
+            echo "No plain 'iPhone N' simulator found on this runner:" >&2
+            xcrun simctl list devices available >&2
+            exit 1
+          fi
+          echo "Using simulator: $DEVICE_NAME"
+          echo "device_name=$DEVICE_NAME" >> "$GITHUB_OUTPUT"
+
+      - name: Run tests
+        run: |
+          set -o pipefail
+          xcodebuild test \
+            -project ssssh.xcodeproj \
+            -scheme ssssh \
+            -destination "platform=iOS Simulator,name=${{ steps.sim.outputs.device_name }}"

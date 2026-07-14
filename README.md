@@ -100,8 +100,10 @@ MIT-licensed; their required notices are preserved in [NOTICE.md](NOTICE.md).
 - Visual theme: green or amber phosphor CRT looks (both with the subtle
   `ScanlineOverlay`) plus a plain high-contrast alternative, toggled from
   the Settings tab and persisted via `@AppStorage`.
-- Swipe down on the terminal to dismiss the keyboard and use the freed-up
-  space as a taller terminal; swipe up to bring the keyboard back.
+- Swipe down on the terminal to page up through scrollback (or send a real
+  page-up keystroke to full-screen apps like `vim`/`less`); swipe up to
+  page back down toward the live output. The keyboard's own show/hide is a
+  toolbar button instead, next to the terminal's title.
 - Copy/paste and OSC 52 clipboard support come from SwiftTerm's built-in
   defaults, not custom code; rectangular selection isn't implemented.
 - Sessions persist independent of navigation: `SessionManager` keeps one
@@ -164,8 +166,9 @@ worth knowing before relying on them:
 
 - **No passphrase support** on generated private keys, on top of Keychain
   protection.
-- **No RSA import.** The algorithm case exists in the data model; there's
-  no UI to paste/import an existing key of any kind.
+- **No RSA or ECDSA import**, only Ed25519 (Keys tab > New Key > Import
+  Key, file-picker only -- no paste). See CLAUDE.md for why RSA/ECDSA
+  import isn't a small addition.
 - **No rectangular text selection** in the terminal.
 
 ## Building locally
