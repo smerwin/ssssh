@@ -247,7 +247,12 @@ preserves the required attribution for the MIT-licensed dependencies
 
 ## Git workflow
 
-- Work happens on feature branches with PRs into `main`, not direct pushes.
+- There's a long-lived `dev` branch for frenzy/exploratory commits --
+  commit directly to it rather than spinning up a feature branch for
+  every small change. It gets merged into `main` occasionally, when
+  cutting a release, rather than per-commit.
+- Outside of `dev`, work happens on feature branches with PRs into
+  `main`, not direct pushes.
 - PRs in this repo tend to get reviewed and merged quickly, often while
   a session is still working. **Before starting new, unrelated work, `git
   checkout main && git pull --ff-only`** rather than assuming a
