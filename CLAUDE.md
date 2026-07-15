@@ -89,11 +89,12 @@ author's own checkout), here's what differs:
      a PR upstream -- keep that diff local to your fork, or isolate it in
      its own untracked/ignored config so it doesn't collide with the
      author's values.
-- **`ci_scripts/ci_post_clone.sh` and Xcode Cloud are the author's CI**,
-  keyed to their App Store Connect app record. It's harmless to leave in
-  place (it's a no-op unless `CI_BUILD_NUMBER` is set by Xcode Cloud
-  itself) but there's no reason to try to wire up your own Xcode Cloud
-  run against it -- it won't have anywhere to deploy to.
+- **`ci_scripts/ci_post_clone.sh`, `ci_scripts/ci_pre_xcodebuild.sh`, and
+  Xcode Cloud are the author's CI**, keyed to their App Store Connect app
+  record. It's harmless to leave in place (both are no-ops unless
+  `CI_BUILD_NUMBER` is set by Xcode Cloud itself) but there's no reason to
+  try to wire up your own Xcode Cloud run against it -- it won't have
+  anywhere to deploy to.
 - The [Manual verification](#manual-verification-against-a-real-ssh-server)
   Docker-based SSH server setup below is account-agnostic and works the
   same regardless of whose fork you're building.
@@ -225,6 +226,28 @@ publish state or output. Read the doc comments on `SSHConnection`,
 each one documents a specific compiler error it's working around, and
 "simplifying" it tends to just reintroduce that error under a different
 guise.
+
+## TestFlight release notes
+
+`ci_scripts/ci_pre_xcodebuild.sh` writes a freshly generated three-line
+haiku to `TestFlight/WhatToTest.en-US.txt` before every Xcode Cloud
+build (gated on `CI_BUILD_NUMBER` like `ci_post_clone.sh`, so it's a
+no-op locally). `ci_scripts/generate_whattotest.py` is the generator --
+a 3-state automaton, one state per line, each drawing a random phrase
+from its own hand-counted 5/7/5-syllable bank. Phrases are templated
+rather than composed word-by-word because programmatic English syllable
+counting is unreliable; correctness instead comes from every phrase in
+the bank being counted by hand. Run it directly to preview output:
+`python3 ci_scripts/generate_whattotest.py`.
+
+This relies on Xcode Cloud's documented convention of auto-reading
+`TestFlight/WhatToTest.<locale>.txt` from the repository at archive time
+and using it as that build's TestFlight "What to Test" notes, with no
+App Store Connect API call (and no credentials) required. That
+convention hasn't been confirmed against a real Xcode Cloud run yet --
+if a build ships without the haiku showing up in TestFlight, check
+Apple's current docs for the exact expected filename/path before
+assuming the generator itself is at fault.
 
 ## Manual verification against a real SSH server
 
