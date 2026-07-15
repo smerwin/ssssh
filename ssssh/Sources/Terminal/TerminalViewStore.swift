@@ -22,6 +22,11 @@ final class TerminalSessionController: NSObject, TerminalViewDelegate {
             view?.feed(byteArray: bytes[...])
         }
 
+        // SwiftTerm's stock accessory bar has a Tab button but no way to combine
+        // it with Shift (see `TerminalAccessoryView`'s doc comment) -- swap in a
+        // wrapper that keeps that bar as-is and adds a Shift+Tab button alongside it.
+        view.inputAccessoryView = TerminalAccessoryView(terminalView: view)
+
         // Swipe down to page up through scrollback (or, inside an
         // alternate-buffer app like vim/less, forward the real page-up key
         // -- see `TerminalView.pageUp`); swipe up to page back down toward
