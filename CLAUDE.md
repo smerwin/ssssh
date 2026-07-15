@@ -54,6 +54,50 @@ identifier syntax.
   MetalToolchain`) -- SwiftTerm ships a Metal shader and archiving fails
   without it if it's not already installed.
 
+## Building your own fork
+
+The README explicitly invites cloning this repo and building it yourself
+instead of paying for the App Store build -- that's a supported use case
+under the [license](#licensing), not a workaround. If you're an agent
+helping someone build their own fork (rather than working in the
+author's own checkout), here's what differs:
+
+- **Simulator builds and tests need nothing changed.** `PRODUCT_BUNDLE_
+  IDENTIFIER` is hardcoded to `com.smerwin.ssssh` in `project.yml`, but
+  the iOS Simulator doesn't enforce code signing, so the plain build/test
+  commands above work immediately on a fresh clone, under any Apple ID or
+  none at all.
+- **In-app purchases work in the Simulator with no Apple Developer
+  account.** The scheme is wired to a local StoreKit configuration file
+  (`ssssh/Products.storekit`, see `storeKitConfiguration:` in
+  `project.yml`), which simulates both products entirely on-device. There
+  is no App Store Connect dependency to test the purchase flow.
+- **A physical device or an archive build needs real signing**, which
+  this repo deliberately does not commit (no `DEVELOPMENT_TEAM` is set in
+  `project.yml`, and it's the author's own team -- committing one would
+  just make it wrong for everyone else). To build for a device:
+  1. Change `PRODUCT_BUNDLE_IDENTIFIER` (both targets) and
+     `options.bundleIdPrefix` in `project.yml` to something under your
+     own account -- `com.smerwin.ssssh` is already taken by the author's
+     App Store listing and won't let you register it.
+  2. Add a `DEVELOPMENT_TEAM` setting (your own Team ID) under the
+     `ssssh` target's `settings.base` in `project.yml`, or just open the
+     regenerated `.xcodeproj` in Xcode once and let "Automatically manage
+     signing" fill it in against your signed-in Apple ID.
+  3. `xcodegen generate` and rebuild. Don't commit the resulting
+     `DEVELOPMENT_TEAM`/bundle ID changes back if you ever intend to send
+     a PR upstream -- keep that diff local to your fork, or isolate it in
+     its own untracked/ignored config so it doesn't collide with the
+     author's values.
+- **`ci_scripts/ci_post_clone.sh` and Xcode Cloud are the author's CI**,
+  keyed to their App Store Connect app record. It's harmless to leave in
+  place (it's a no-op unless `CI_BUILD_NUMBER` is set by Xcode Cloud
+  itself) but there's no reason to try to wire up your own Xcode Cloud
+  run against it -- it won't have anywhere to deploy to.
+- The [Manual verification](#manual-verification-against-a-real-ssh-server)
+  Docker-based SSH server setup below is account-agnostic and works the
+  same regardless of whose fork you're building.
+
 ## Real bugs found in this codebase's history (don't reintroduce)
 
 - **XcodeGen's top-level `resources:` target key silently produces no
