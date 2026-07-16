@@ -22,15 +22,25 @@ final class TerminalSessionController: NSObject, TerminalViewDelegate {
             view?.feed(byteArray: bytes[...])
         }
 
+        // SwiftTerm's stock accessory bar has a Tab button but no way to combine
+        // it with Shift (see `TerminalAccessoryView`'s doc comment) -- swap in a
+        // wrapper that keeps that bar as-is and adds a Shift+Tab button alongside it.
+        view.inputAccessoryView = TerminalAccessoryView(terminalView: view)
+
         // Swipe down to page up through scrollback (or, inside an
         // alternate-buffer app like vim/less, forward the real page-up key
         // -- see `TerminalView.pageUp`); swipe up to page back down toward
         // the live output. A discrete one-shot jump is worth having
         // alongside `TerminalView`'s own drag-to-scroll (it's a
         // `UIScrollView`) the same way page-up/page-down keys are worth
-        // having alongside a mouse wheel. Allowed to recognize alongside
-        // that pan gesture so a quick swipe isn't swallowed by scrolling.
-        let swipeDelegate = SwipeSimultaneousRecognitionDelegate()
+        // having alongside a mouse wheel. Scoped to recognize alongside
+        // *only* that scroll pan gesture (not every recognizer on the
+        // view) so a quick swipe isn't swallowed by scrolling -- without
+        // this scoping, the delegate previously said yes to simultaneous
+        // recognition against SwiftTerm's own double-tap and selection-pan
+        // gestures too, which let a swipe steal touches from word-select
+        // and left stray highlighting behind after paging.
+        let swipeDelegate = SwipeSimultaneousRecognitionDelegate(scrollPanGesture: view.panGestureRecognizer)
         self.swipeDelegate = swipeDelegate
 
         let swipeDown = UISwipeGestureRecognizer(target: self, action: #selector(handlePageUp))
@@ -91,8 +101,14 @@ final class TerminalSessionController: NSObject, TerminalViewDelegate {
 /// `TerminalViewDelegate`'s nonisolated requirements ("conformance ... crosses into main
 /// actor-isolated code"). A standalone delegate object sidesteps that entirely.
 private final class SwipeSimultaneousRecognitionDelegate: NSObject, UIGestureRecognizerDelegate {
+    private weak var scrollPanGesture: UIPanGestureRecognizer?
+
+    init(scrollPanGesture: UIPanGestureRecognizer) {
+        self.scrollPanGesture = scrollPanGesture
+    }
+
     func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer) -> Bool {
-        true
+        otherGestureRecognizer === scrollPanGesture
     }
 }
 

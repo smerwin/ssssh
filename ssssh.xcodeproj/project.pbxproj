@@ -20,6 +20,7 @@
 		3EB6F45B46C155EED4B667A2 /* HostKeyFingerprint.swift in Sources */ = {isa = PBXBuildFile; fileRef = CA60E549D7F68D1D9CC615CD /* HostKeyFingerprint.swift */; };
 		454B6EB4C4C67E640F2E8193 /* KeyStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 65C268E95639474C9F86C299 /* KeyStoreTests.swift */; };
 		499C5C7467200EB55682A40C /* HostListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F25E12243FCBF53A0F908138 /* HostListView.swift */; };
+		4F348E763914BCD70F927283 /* TerminalAccessoryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B60A6E5AC6A76C8B6159900A /* TerminalAccessoryView.swift */; };
 		4F79F592283CADCEB8E1CFB6 /* HostKeyConfirmationView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BFC7605273F3C9662BBBFA0F /* HostKeyConfirmationView.swift */; };
 		5312287D9B46A14EDC277640 /* Keychain.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5811CDCD9D62AD82C54015C6 /* Keychain.swift */; };
 		54F6CA36EADC0D5274B75964 /* SessionsListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 896F10A3A80169241CAF0C10 /* SessionsListView.swift */; };
@@ -102,6 +103,7 @@
 		9C1DCCFA42095665E2E964B5 /* SessionManagerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionManagerTests.swift; sourceTree = "<group>"; };
 		A1C12A2E6A2A31B6A04A647B /* sssshTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = sssshTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		A64C9DE84719618DC3BA55D4 /* SSHPrivateKeyMaterial.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SSHPrivateKeyMaterial.swift; sourceTree = "<group>"; };
+		B60A6E5AC6A76C8B6159900A /* TerminalAccessoryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalAccessoryView.swift; sourceTree = "<group>"; };
 		B66FDE7D7C228B51648F7E71 /* ScanlineOverlay.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScanlineOverlay.swift; sourceTree = "<group>"; };
 		BFC7605273F3C9662BBBFA0F /* HostKeyConfirmationView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostKeyConfirmationView.swift; sourceTree = "<group>"; };
 		C6F1F3497C6EAE8353915767 /* SSHConnection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SSHConnection.swift; sourceTree = "<group>"; };
@@ -290,6 +292,7 @@
 			children = (
 				B66FDE7D7C228B51648F7E71 /* ScanlineOverlay.swift */,
 				896F10A3A80169241CAF0C10 /* SessionsListView.swift */,
+				B60A6E5AC6A76C8B6159900A /* TerminalAccessoryView.swift */,
 				23E37953DBEC62F4E6A8BB08 /* TerminalSessionView.swift */,
 				DB5762D5CFBEF2BCFFBA74A2 /* TerminalTheme.swift */,
 				EA84494885567FE6E74720B7 /* TerminalViewStore.swift */,
@@ -434,6 +437,7 @@
 				54F6CA36EADC0D5274B75964 /* SessionsListView.swift in Sources */,
 				7F4CE2D2B6C662A7D9759A81 /* SettingsView.swift in Sources */,
 				3769863565D3E3732F3DB7D5 /* TOFUHostKeyValidator.swift in Sources */,
+				4F348E763914BCD70F927283 /* TerminalAccessoryView.swift in Sources */,
 				0B2BAF96DEE671D53D1A52CB /* TerminalSessionView.swift in Sources */,
 				2642117F49E98E090CC06422 /* TerminalTheme.swift in Sources */,
 				D0A2A629DA866144358215FE /* TerminalViewStore.swift in Sources */,
