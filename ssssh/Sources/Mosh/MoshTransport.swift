@@ -80,6 +80,30 @@ final class MoshTransport: @unchecked Sendable {
     /// automatically and report a hard failure via `onError` instead --
     /// otherwise a genuinely dead network would retry forever, silently.
     private static let maxConsecutiveRebuildFailures = 5
+    /// Enforces real wall-clock spacing between consecutive rebuild
+    /// attempts -- without this, a genuinely still-unavailable network
+    /// (not just one stale socket, e.g. iOS broadly suspending networking
+    /// while this app is backgrounded) lets each freshly-rebuilt
+    /// connection fail again just as fast as the last: `NWConnection`'s
+    /// send/receive completions all run on this same serial `queue`, so a
+    /// fast, repeated failure can cascade through the entire
+    /// `maxConsecutiveRebuildFailures` budget within milliseconds --
+    /// reported directly as a Mosh session still dying with "NWError 89"
+    /// (POSIX ECANCELED) when the phone sleeps, even after the send-path
+    /// fix that made a single such failure retry instead of dying
+    /// immediately. Starts in the past so the very first attempt after any
+    /// failure stays immediate -- the common roaming case (a real
+    /// network/interface change) usually recovers on that first retry, and
+    /// delaying it would make an ordinary Wi-Fi handoff feel sluggish.
+    private var nextAllowedRebuildAttempt = Date.distantPast
+    /// Mirrors `SSHConnection`'s own reconnect backoff shape (1, 2, 4, 8,
+    /// 16... capped at 30s) so repeated failures are spaced out over real
+    /// time long enough for the phone to actually wake back up, instead of
+    /// being exhausted in a single instant. Not `private` so it's directly
+    /// testable, same reasoning as `reportFatalError`.
+    static func rebuildBackoff(forFailureCount count: Int) -> TimeInterval {
+        min(pow(2.0, Double(max(count - 1, 0))), 30)
+    }
     /// Set the first (and only) time `onError` fires, from any of this
     /// type's several independent call sites (`rebuildConnection`'s own
     /// give-up, a send failure, a protocol-version mismatch). Without this,
@@ -238,6 +262,13 @@ final class MoshTransport: @unchecked Sendable {
         // the same give-up again; that's exactly what used to keep firing
         // every ~3-12s indefinitely).
         guard !isStopped, !hasReportedFatalError else { return }
+        // Also don't re-enter before the backoff from the *previous*
+        // attempt has elapsed -- see `nextAllowedRebuildAttempt`'s doc
+        // comment. A call arriving too soon is a symptom of the same
+        // still-broken network the last attempt already accounted for,
+        // not a new, independent failure worth spending another attempt on.
+        guard Date() >= nextAllowedRebuildAttempt else { return }
+
         connection.stateUpdateHandler = nil
         connection.cancel()
 
@@ -251,6 +282,7 @@ final class MoshTransport: @unchecked Sendable {
             reportFatalError(MoshTransportError.roamingGaveUp(reason: reason))
             return
         }
+        nextAllowedRebuildAttempt = Date().addingTimeInterval(Self.rebuildBackoff(forFailureCount: consecutiveRebuildFailures))
         sendState()
     }
 
@@ -403,11 +435,12 @@ final class MoshTransport: @unchecked Sendable {
         }
         // A real, authenticated packet made it all the way through, so
         // whatever connection we're currently on genuinely works -- reset
-        // the rebuild-failure count so it only ever measures *consecutive*
-        // failed rebuilds, not roaming events accumulated over the whole
-        // session's lifetime, and reset the silence clock the heartbeat
-        // tick checks.
+        // the rebuild-failure count (and its backoff) so it only ever
+        // measures *consecutive* failed rebuilds, not roaming events
+        // accumulated over the whole session's lifetime, and reset the
+        // silence clock the heartbeat tick checks.
         consecutiveRebuildFailures = 0
+        nextAllowedRebuildAttempt = .distantPast
         lastReceivedAt = Date()
 
         // Reject anything not actually from the server, and any sequence

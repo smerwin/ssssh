@@ -38,4 +38,30 @@ struct MoshTransportTests {
 
         #expect(!firedAfterReassignment)
     }
+
+    /// Regression test for a real production bug: a genuinely
+    /// still-unavailable network (e.g. iOS suspending networking while the
+    /// app is backgrounded, not just one stale socket) let each
+    /// freshly-rebuilt connection fail again just as fast as the last,
+    /// cascading through the whole `maxConsecutiveRebuildFailures` budget
+    /// within milliseconds -- reported directly as a Mosh session still
+    /// dying with "NWError 89" when the phone sleeps. The fix spaces
+    /// consecutive attempts out with a growing backoff, mirroring
+    /// `SSHConnection`'s own reconnect delay shape.
+    @Test("Rebuild backoff grows exponentially per consecutive failure, capped at 30s, starting immediate")
+    func rebuildBackoffGrowsAndCaps() {
+        #expect(MoshTransport.rebuildBackoff(forFailureCount: 1) == 1)
+        #expect(MoshTransport.rebuildBackoff(forFailureCount: 2) == 2)
+        #expect(MoshTransport.rebuildBackoff(forFailureCount: 3) == 4)
+        #expect(MoshTransport.rebuildBackoff(forFailureCount: 4) == 8)
+        #expect(MoshTransport.rebuildBackoff(forFailureCount: 5) == 16)
+        #expect(MoshTransport.rebuildBackoff(forFailureCount: 6) == 30)
+        #expect(MoshTransport.rebuildBackoff(forFailureCount: 100) == 30)
+    }
+
+    @Test("Rebuild backoff never returns a negative or zero delay even for a failure count of zero")
+    func rebuildBackoffHandlesNonPositiveCounts() {
+        #expect(MoshTransport.rebuildBackoff(forFailureCount: 0) == 1)
+        #expect(MoshTransport.rebuildBackoff(forFailureCount: -1) == 1)
+    }
 }
