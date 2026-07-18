@@ -69,4 +69,36 @@ struct SessionManagerTests {
         #expect(manager.sessions == [session])
         #expect(session.state.isDisconnectedOrFailed)
     }
+
+    @Test func applicationDidEnterBackgroundIsIdempotentAndDoesNotTouchSessions() throws {
+        // Calling it twice in a row (e.g. two backgrounding notifications
+        // firing back to back) must not double-request a background task
+        // or otherwise misbehave -- the `backgroundTaskID == .invalid`
+        // guard is what's being pinned down here.
+        let manager = SessionManager(keyStore: KeyStore(), hostKeyStore: HostKeyStore())
+        let host = SSHHost(nickname: "test", hostname: "example.com", username: "me")
+        let session = manager.session(for: host)
+
+        manager.applicationDidEnterBackground()
+        manager.applicationDidEnterBackground()
+
+        #expect(manager.sessions == [session])
+    }
+
+    @Test func applicationWillEnterForegroundEndsKeepAliveAndReconnectsAsUsual() throws {
+        // Foregrounding after backgrounding must still reconnect a
+        // dropped/failed session in place, same as plain
+        // `reconnectIfNeeded()` -- the background keepalive bookkeeping
+        // must not get in the way of that.
+        let manager = SessionManager(keyStore: KeyStore(), hostKeyStore: HostKeyStore())
+        let host = SSHHost(nickname: "test", hostname: "example.com", username: "me")
+        let session = manager.session(for: host)
+        #expect(session.state.isDisconnectedOrFailed)
+
+        manager.applicationDidEnterBackground()
+        manager.applicationWillEnterForeground()
+
+        #expect(manager.sessions == [session])
+        #expect(session.state.isDisconnectedOrFailed)
+    }
 }

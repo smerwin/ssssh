@@ -460,6 +460,12 @@ final class SSHConnection: Identifiable, Hashable, @unchecked Sendable {
         Task { try? await writer.write(buffer) }
     }
 
+    /// Last size this connection told the remote PTY about, defaulting to
+    /// the size requested at connect time (see `ptyRequest` in
+    /// `runSession`). Used by `sendKeepalive()` to re-send a size the
+    /// terminal view may never have actually changed.
+    private var lastKnownSize: (cols: Int, rows: Int) = (80, 24)
+
     func resize(cols: Int, rows: Int) {
         guard cols > 0, rows > 0 else { return }
         if let transport = network.moshTransport {
@@ -468,6 +474,18 @@ final class SSHConnection: Identifiable, Hashable, @unchecked Sendable {
         }
         guard let writer = network.writer else { return }
         Task { try? await writer.changeSize(cols: cols, rows: rows, pixelWidth: 0, pixelHeight: 0) }
+    }
+
+    /// Re-sends the last known terminal size as a harmless keepalive.
+    /// `SessionManager` calls this on a timer while the app is
+    /// backgrounded so an idle-timing-out NAT or firewall along the way
+    /// doesn't consider the TCP connection dead during the up-to-five-
+    /// minute background window -- see
+    /// `SessionManager.applicationDidEnterBackground()`. Resending the
+    /// *same* size is a genuine wire message (a `WindowChangeRequest`) but
+    /// a no-op to any well-behaved shell, since the size hasn't changed.
+    func sendKeepalive() {
+        resize(cols: lastKnownSize.cols, rows: lastKnownSize.rows)
     }
 
     func disconnect() {
