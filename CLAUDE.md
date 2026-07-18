@@ -460,13 +460,53 @@ sometimes less helpful" rather than mosh's more complete but far more
 involved approach: only single plain printable ASCII keystrokes are
 predicted (not Enter, Backspace, arrow keys, or paste/batched input); any
 sign of trouble (a mismatched confirmation, or a control/escape byte
-arriving mid-prediction) abandons the whole pending queue rather than
-attempting partial reconciliation, which can rarely leave a stray
-underlined character on screen until something else overwrites that
-cell -- a cosmetic limitation, not a correctness one, since the
-underlying terminal content is never at risk. `TerminalSessionController`
-also gates prediction off entirely while `view.getTerminal().isCurrentBufferAlternate`
-is true (vim, htop, less, etc.), and resets the pending queue on resize.
+arriving mid-prediction) abandons the whole pending queue at once rather
+than attempting partial reconciliation. `TerminalSessionController` also
+gates prediction off entirely while
+`view.getTerminal().isCurrentBufferAlternate` is true (vim, htop, less,
+etc.), and resets the pending queue on resize.
+
+**A real bug this surfaced in production, not just a rare edge case as
+first assumed**: running Claude Code's own CLI (`claude`) over a Mosh
+session produced glitchy output and stray underlined blank cells
+(rendering as spurious underscores) left under the input line. Raw-mode,
+self-redrawing programs like that don't echo typed characters
+sequentially in place the way a plain shell does -- they redraw their own
+input box using absolute cursor positioning, so *most* of their
+predictions get abandoned before a real byte ever lands on the exact cell
+a prediction occupies. The original design assumed abandonment was rare
+enough that leaving a stray prediction on screen "until something else
+overwrites that cell" was an acceptable cosmetic limitation; against a
+program that abandons predictions constantly, that stale cell often never
+gets overwritten at all, making the artifact permanent and the constant
+predict/abandon cycle itself visibly glitchy. Two fixes, both verified
+against a real SwiftTerm `Terminal` reproducing exactly this scenario (a
+program that redraws with absolute positioning instead of echoing
+in place):
+1. Abandoning a prediction -- for any reason, in both `predict` and
+   `reconcile` -- now returns an explicit erase instruction
+   (`CSI <n> X`, Erase Character: blanks `n` cells at the cursor without
+   moving it) instead of just forgetting about the prediction, so a stale
+   underline can never linger past the moment it's known to be wrong.
+   `TerminalSessionController` feeds this cleanup *before* the real bytes
+   that triggered it.
+2. `mispredictionCount`/`isDisabled`: a genuine misprediction (a real byte
+   that contradicts an actively pending prediction) is tracked separately
+   from simply declining to predict an unpredictable keystroke (Enter,
+   Backspace, arrows are normal and expected, not evidence of a problem --
+   only counting *actual* mismatches avoids tripping this on completely
+   ordinary shell usage, which was confirmed with a dedicated test). After
+   `mispredictionCircuitBreakerThreshold` (3) genuine mismatches, this
+   engine stops predicting for the rest of its lifetime -- one
+   `MoshPredictionEngine` lives as long as its `TerminalSessionController`,
+   i.e. the whole terminal session including any Mosh roaming reconnects --
+   rather than continuing to flicker predictions on and off against a
+   program it's already shown it can't keep up with.
+
+If you ever "simplify" either of these back out, expect exactly this
+failure mode to return: run something that doesn't do simple sequential
+echo (a TUI, a fancy prompt, another CLI agent) over a Mosh session and
+watch for stray underlined cells or flicker.
 
 ### Roaming (`MoshTransport`'s `NWPathMonitor` + rebuild logic)
 

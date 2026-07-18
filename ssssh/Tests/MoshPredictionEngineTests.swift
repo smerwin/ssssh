@@ -20,22 +20,20 @@ struct MoshPredictionEngineTests {
         #expect(result == expected)
     }
 
-    @Test("Refuses to predict multi-byte input and clears any pending predictions")
+    @Test("Refuses to predict multi-byte input and erases the one pending prediction")
     func refusesMultiByteInput() {
         let engine = MoshPredictionEngine()
-        _ = engine.predict(keystroke: [0x61])
+        _ = engine.predict(keystroke: [0x61]) // one pending prediction
         let result = engine.predict(keystroke: [0x1B, 0x5B, 0x41]) // an arrow key escape sequence
-        #expect(result == nil)
+        #expect(result == Array("\u{1B}[1X".utf8)) // erase the 1 cell that was pending
 
-        // The pending queue should now be empty -- confirm indirectly: a
-        // control byte no longer has anything to reconcile against, so it
-        // must not clear again (reconcile is a no-op on an empty queue,
-        // observable via a following prediction starting fresh at offset 0).
+        // Confirm the queue is now actually empty -- the next prediction
+        // starts fresh at offset 0, not appended after a stale entry.
         let next = engine.predict(keystroke: [0x63]) // "c"
         #expect(next == Array("\u{1B}[4mc\u{1B}[24m\u{1B}[1D".utf8))
     }
 
-    @Test("Refuses to predict non-printable single bytes (e.g. Enter, Backspace)")
+    @Test("Refuses to predict non-printable single bytes (e.g. Enter, Backspace) and returns nil when nothing was pending")
     func refusesNonPrintableSingleByte() {
         let engine = MoshPredictionEngine()
         #expect(engine.predict(keystroke: [0x0D]) == nil) // Enter
@@ -61,7 +59,8 @@ struct MoshPredictionEngineTests {
         _ = engine.predict(keystroke: [0x61]) // "a"
         _ = engine.predict(keystroke: [0x62]) // "b"
 
-        engine.reconcile(hostBytes: [0x61]) // confirms "a"
+        let cleanup = engine.reconcile(hostBytes: [0x61]) // confirms "a"
+        #expect(cleanup == nil) // a full match needs no erasing
 
         // "c" should now predict as if only "b" is still outstanding --
         // i.e. at offset 1, not offset 2.
@@ -70,11 +69,12 @@ struct MoshPredictionEngineTests {
         #expect(result == expected)
     }
 
-    @Test("Reconcile abandons the whole queue on a mismatched byte")
+    @Test("Reconcile abandons the whole queue on a mismatched byte and returns an erase instruction")
     func reconcileAbandonsOnMismatch() {
         let engine = MoshPredictionEngine()
         _ = engine.predict(keystroke: [0x61]) // predicted "a"
-        engine.reconcile(hostBytes: [0x78]) // but the real echo is "x" (e.g. autocorrect/completion)
+        let cleanup = engine.reconcile(hostBytes: [0x78]) // but the real echo is "x" (e.g. autocorrect/completion)
+        #expect(cleanup == Array("\u{1B}[1X".utf8))
 
         // Queue should be empty now -- the next prediction starts fresh at offset 0.
         let result = engine.predict(keystroke: [0x63])
@@ -85,7 +85,8 @@ struct MoshPredictionEngineTests {
     func reconcileAbandonsOnControlByte() {
         let engine = MoshPredictionEngine()
         _ = engine.predict(keystroke: [0x61])
-        engine.reconcile(hostBytes: [0x1B]) // an escape sequence starting, not plain text
+        let cleanup = engine.reconcile(hostBytes: [0x1B]) // an escape sequence starting, not plain text
+        #expect(cleanup == Array("\u{1B}[1X".utf8))
 
         let result = engine.predict(keystroke: [0x63])
         #expect(result == Array("\u{1B}[4mc\u{1B}[24m\u{1B}[1D".utf8))
@@ -94,20 +95,27 @@ struct MoshPredictionEngineTests {
     @Test("Reconcile is a no-op when nothing is pending")
     func reconcileNoOpWhenEmpty() {
         let engine = MoshPredictionEngine()
-        engine.reconcile(hostBytes: Array("hello world, nothing pending here".utf8))
+        #expect(engine.reconcile(hostBytes: Array("hello world, nothing pending here".utf8)) == nil)
         let result = engine.predict(keystroke: [0x61])
         #expect(result == Array("\u{1B}[4ma\u{1B}[24m\u{1B}[1D".utf8))
     }
 
-    @Test("reset() clears outstanding predictions")
+    @Test("reset() erases outstanding predictions and clears them")
     func resetClearsPending() {
         let engine = MoshPredictionEngine()
         _ = engine.predict(keystroke: [0x61])
         _ = engine.predict(keystroke: [0x62])
-        engine.reset()
+        let cleanup = engine.reset()
+        #expect(cleanup == Array("\u{1B}[2X".utf8)) // two pending cells to erase
 
         let result = engine.predict(keystroke: [0x63])
         #expect(result == Array("\u{1B}[4mc\u{1B}[24m\u{1B}[1D".utf8))
+    }
+
+    @Test("reset() returns nil when nothing was pending")
+    func resetNoOpWhenEmpty() {
+        let engine = MoshPredictionEngine()
+        #expect(engine.reset() == nil)
     }
 
     @Test("A multi-character sequence reconciles correctly end to end, matching real echo byte for byte")
@@ -118,10 +126,53 @@ struct MoshPredictionEngineTests {
             _ = engine.predict(keystroke: [byte])
         }
         // The real server echoes the same bytes back, arriving as one chunk.
-        engine.reconcile(hostBytes: word)
+        #expect(engine.reconcile(hostBytes: word) == nil)
 
         // Fully confirmed -- next prediction should start fresh at offset 0.
         let result = engine.predict(keystroke: [0x20]) // space
         #expect(result == Array("\u{1B}[4m \u{1B}[24m\u{1B}[1D".utf8))
+    }
+
+    // MARK: - Circuit breaker (the real bug: raw-mode apps like Claude Code's
+    // own CLI redraw their input box with absolute cursor positioning
+    // instead of echoing sequentially, so most predictions mismatch)
+
+    @Test("Trips after repeated genuine mispredictions and stops predicting")
+    func circuitBreakerTripsOnRepeatedMispredictions() {
+        let engine = MoshPredictionEngine()
+
+        // Two mismatches shouldn't be enough on their own (threshold is 3).
+        for _ in 0..<2 {
+            #expect(engine.predict(keystroke: [0x61]) != nil)
+            #expect(engine.reconcile(hostBytes: [0x1B]) != nil) // mismatch: a control byte instead
+        }
+        #expect(engine.predict(keystroke: [0x61]) != nil) // still working
+
+        // Third genuine misprediction trips the breaker.
+        #expect(engine.reconcile(hostBytes: [0x1B]) != nil)
+
+        // From here on, predict() should never produce a preview again --
+        // only possibly an erase for whatever was still pending (nothing
+        // is, here, since the mismatch above already cleared it).
+        #expect(engine.predict(keystroke: [0x62]) == nil)
+        #expect(engine.predict(keystroke: [0x63]) == nil)
+    }
+
+    @Test("Deliberately not predicting Enter/Backspace does not count toward the circuit breaker")
+    func nonPredictableKeystrokesDoNotTripBreaker() {
+        let engine = MoshPredictionEngine()
+
+        // Simulate lots of normal shell usage: type, confirm, hit Enter --
+        // repeated many times, well past the mismatch threshold, with only
+        // *expected* non-predictions (Enter) and no genuine mismatches.
+        for _ in 0..<10 {
+            _ = engine.predict(keystroke: [0x61])
+            #expect(engine.reconcile(hostBytes: [0x61]) == nil) // confirmed correctly
+            _ = engine.predict(keystroke: [0x0D]) // Enter -- deliberately not predicted
+        }
+
+        // Prediction should still work fine -- the breaker never tripped.
+        let result = engine.predict(keystroke: [0x62])
+        #expect(result == Array("\u{1B}[4mb\u{1B}[24m\u{1B}[1D".utf8))
     }
 }

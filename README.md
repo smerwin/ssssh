@@ -198,15 +198,19 @@ worth knowing before relying on them:
   import isn't a small addition.
 - **No rectangular text selection** in the terminal.
 - **Predictive local echo is deliberately simplified, not frame-based
-  like real mosh.** `MoshPredictionEngine` (`Sources/Mosh/`) predicts by
-  drawing an underlined preview character and moving the cursor back,
-  rather than maintaining mosh's own mirrored terminal framebuffer with
-  epoch/glitch tracking -- see its doc comment for the full reasoning and
-  the specific, rare case (a real byte arriving that doesn't match a
-  still-outstanding prediction) where a stray underlined character can be
-  left on screen until something else overwrites that cell. The
-  underlying terminal content itself is never at risk in that case --
-  only ever a cosmetic artifact, not data loss or corruption.
+  like real mosh, and backs off automatically against programs it
+  doesn't work well with.** `MoshPredictionEngine` (`Sources/Mosh/`)
+  predicts by drawing an underlined preview character and moving the
+  cursor back, rather than maintaining mosh's own mirrored terminal
+  framebuffer with epoch/glitch tracking. Raw-mode, self-redrawing
+  programs (confirmed with Claude Code's own CLI running over a Mosh
+  session) don't echo keystrokes sequentially, so most predictions
+  against them get abandoned rather than confirmed -- any abandoned
+  prediction is now explicitly erased rather than left on screen, and
+  after a few genuine mismatches in a row this engine stops predicting
+  entirely for the rest of that session rather than continuing to
+  flicker against a program it's already shown it can't keep up with.
+  See `MoshPredictionEngine`'s doc comment for the full reasoning.
 - **Roaming's local-network-change detection is real but only
   partially provable in development.** `MoshTransport` recovers from an
   actual, induced network blackout (verified against a real
