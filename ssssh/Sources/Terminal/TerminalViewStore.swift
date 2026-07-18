@@ -10,6 +10,12 @@ final class TerminalSessionController: NSObject, TerminalViewDelegate {
     let view: SwiftTerm.TerminalView
     private weak var connection: SSHConnection?
     private var swipeDelegate: SwipeSimultaneousRecognitionDelegate?
+    /// Predictive local echo, active only while `connection.isUsingMosh`
+    /// -- see `MoshPredictionEngine`'s doc comment. Always present (rather
+    /// than created/torn down with the Mosh upgrade) since it's a no-op
+    /// engine with nothing pending whenever `predict` is never called for
+    /// it, which keeps this wiring unconditional and simple.
+    private let predictionEngine = MoshPredictionEngine()
 
     @MainActor
     init(connection: SSHConnection) {
@@ -18,7 +24,8 @@ final class TerminalSessionController: NSObject, TerminalViewDelegate {
         super.init()
 
         view.terminalDelegate = self
-        connection.onOutput = { [weak view] bytes in
+        connection.onOutput = { [weak view, weak self] bytes in
+            self?.predictionEngine.reconcile(hostBytes: bytes)
             view?.feed(byteArray: bytes[...])
         }
 
@@ -77,13 +84,22 @@ final class TerminalSessionController: NSObject, TerminalViewDelegate {
 
     func send(source: SwiftTerm.TerminalView, data: ArraySlice<UInt8>) {
         let bytes = Array(data)
-        Task { @MainActor [weak connection] in
+        Task { @MainActor [weak connection, weak view, predictionEngine] in
+            if let connection, connection.isUsingMosh, let view, !view.getTerminal().isCurrentBufferAlternate,
+               let preview = predictionEngine.predict(keystroke: bytes) {
+                view.feed(byteArray: preview[...])
+            }
             connection?.send(bytes)
         }
     }
 
     func sizeChanged(source: SwiftTerm.TerminalView, newCols: Int, newRows: Int) {
-        Task { @MainActor [weak connection] in
+        Task { @MainActor [weak connection, predictionEngine] in
+            // A resize invalidates any assumption predictions were making
+            // about cursor position -- see MoshPredictionEngine's doc
+            // comment on why this app doesn't model the terminal itself
+            // and so can't reconcile through a reflow.
+            predictionEngine.reset()
             connection?.resize(cols: newCols, rows: newRows)
         }
     }

@@ -22,6 +22,31 @@ import CryptoKit
 private final class SSHNetworkState: @unchecked Sendable {
     var client: Citadel.SSHClient?
     var writer: TTYStdinWriter?
+    /// Non-nil once `runSession`'s `attemptMoshUpgrade` has confirmed a
+    /// working UDP path and closed `client` -- from that point on, `send`/
+    /// `resize` route here instead of to `writer`.
+    var moshTransport: MoshTransport?
+}
+
+/// Ensures a `CheckedContinuation` is resumed exactly once even though it
+/// can be resumed from three different, independently racing sources
+/// (`MoshTransport.onEstablished`, its `onError`, and a timeout) --
+/// resuming a checked continuation more than once is a runtime trap.
+private final class SingleResume: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<Bool, Never>?
+
+    init(_ continuation: CheckedContinuation<Bool, Never>) {
+        self.continuation = continuation
+    }
+
+    func resume(_ value: Bool) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let continuation else { return }
+        self.continuation = nil
+        continuation.resume(returning: value)
+    }
 }
 
 /// A single interactive SSH session backed by Citadel, feeding decoded PTY
@@ -67,6 +92,17 @@ final class SSHConnection: Identifiable, Hashable, @unchecked Sendable {
     let id = UUID()
     let host: SSHHost
     private(set) var state: State = .connecting
+
+    /// Whether this connection's live data path is currently Mosh rather
+    /// than the SSH channel -- true once `attemptMoshUpgrade` (in
+    /// `runSession`) has confirmed the UDP path and committed. The
+    /// terminal layer uses this to decide whether predictive local echo
+    /// applies (see `TerminalSessionController`) -- it's SSH's own,
+    /// generally much lower-latency round trip otherwise, where
+    /// prediction isn't mosh's own feature to begin with.
+    var isUsingMosh: Bool {
+        network.moshTransport != nil
+    }
 
     /// Set once by `TerminalViewStore`'s persistent controller for this
     /// connection and left wired for as long as the session is open, so
@@ -202,6 +238,8 @@ final class SSHConnection: Identifiable, Hashable, @unchecked Sendable {
         func clearNetworkState() {
             network.client = nil
             network.writer = nil
+            network.moshTransport?.stop()
+            network.moshTransport = nil
         }
 
         // For a clean, expected end: the remote shell exited on its own
@@ -242,6 +280,68 @@ final class SSHConnection: Identifiable, Hashable, @unchecked Sendable {
         func emitDiagnostic(_ line: String) async {
             guard UserDefaults.standard.verboseConnectingEnabled else { return }
             await MainActor.run { self.onOutput?(Array((line + "\r\n").utf8)) }
+        }
+
+        // Bootstraps `mosh-server` over `client`, opens a `MoshTransport` to
+        // it, and waits up to 5s for proof of real UDP connectivity (mosh-
+        // server never sends first, so silence within the timeout typically
+        // means a firewall is blocking UDP outright) before committing.
+        // Returns `true` once the switch has happened -- `client` has been
+        // closed and `network.moshTransport` is now the live data path, so
+        // the caller must skip opening a PTY over SSH. Returns `false` for
+        // every other outcome (Mosh unavailable, bootstrap failed, UDP
+        // unreachable), in which case `client` is still open and untouched
+        // for the caller to proceed with the normal SSH PTY path.
+        func attemptMoshUpgrade(client: Citadel.SSHClient) async -> Bool {
+            let bootstrap: MoshBootstrap.Result
+            do {
+                bootstrap = try await MoshBootstrap.detect(client: client)
+            } catch {
+                await emitDiagnostic("debug1: Mosh not available (\(error.localizedDescription)).")
+                return false
+            }
+            await emitDiagnostic("debug1: mosh-server available on port \(bootstrap.port); attempting Mosh upgrade.")
+
+            let transport = MoshTransport(host: host.hostname, port: bootstrap.port, sessionKey: bootstrap.sessionKey)
+
+            let established = await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
+                let resumer = SingleResume(continuation)
+                transport.onEstablished = { resumer.resume(true) }
+                transport.onError = { error in
+                    Task { await emitDiagnostic("debug1: Mosh UDP error (\(error.localizedDescription)) before upgrade completed.") }
+                    resumer.resume(false)
+                }
+                transport.start()
+                DispatchQueue.global().asyncAfter(deadline: .now() + 5) {
+                    resumer.resume(false)
+                }
+            }
+
+            guard established else {
+                await emitDiagnostic("debug1: Mosh UDP path did not respond within 5s (likely blocked by a firewall); continuing over SSH.")
+                transport.stop()
+                return false
+            }
+
+            await emitDiagnostic("debug1: Mosh UDP path confirmed; closing SSH connection and switching this session to Mosh.")
+
+            transport.onOutput = { [weak self] bytes in
+                guard let self else { return }
+                Task { await MainActor.run { self.onOutput?(bytes) } }
+            }
+            transport.onError = { [weak self] error in
+                guard let self else { return }
+                Task {
+                    let message = Self.describe(error)
+                    await emitDiagnostic("debug1: Mosh session error: \(message).")
+                    await finishWithDrop(.failed(message))
+                }
+            }
+
+            network.moshTransport = transport
+            network.client = nil
+            try? await client.close()
+            return true
         }
 
         // Unlike `emitDiagnostic`, this isn't gated by Verbose Connecting --
@@ -295,6 +395,14 @@ final class SSHConnection: Identifiable, Hashable, @unchecked Sendable {
                 self.hasConnectedBefore = true
             }
 
+            if UserDefaults.standard.autoUpgradeToMoshEnabled, await attemptMoshUpgrade(client: client) {
+                // `network.moshTransport` is now the live data path and
+                // `client` has been closed -- nothing left to do here, the
+                // transport keeps running independently until `disconnect()`
+                // or its own `onError` fires.
+                return
+            }
+
             let ptyRequest = SSHChannelRequestEvent.PseudoTerminalRequest(
                 wantReply: true,
                 term: "xterm-256color",
@@ -343,6 +451,10 @@ final class SSHConnection: Identifiable, Hashable, @unchecked Sendable {
     }
 
     func send(_ bytes: [UInt8]) {
+        if let transport = network.moshTransport {
+            transport.send(bytes)
+            return
+        }
         guard let writer = network.writer else { return }
         let buffer = ByteBuffer(bytes: bytes)
         Task { try? await writer.write(buffer) }
@@ -355,8 +467,12 @@ final class SSHConnection: Identifiable, Hashable, @unchecked Sendable {
     private var lastKnownSize: (cols: Int, rows: Int) = (80, 24)
 
     func resize(cols: Int, rows: Int) {
-        guard let writer = network.writer, cols > 0, rows > 0 else { return }
-        lastKnownSize = (cols, rows)
+        guard cols > 0, rows > 0 else { return }
+        if let transport = network.moshTransport {
+            transport.resize(cols: cols, rows: rows)
+            return
+        }
+        guard let writer = network.writer else { return }
         Task { try? await writer.changeSize(cols: cols, rows: rows, pixelWidth: 0, pixelHeight: 0) }
     }
 
@@ -380,9 +496,12 @@ final class SSHConnection: Identifiable, Hashable, @unchecked Sendable {
         connectTask?.cancel()
         connectTask = nil
         let client = network.client
+        let transport = network.moshTransport
         network.client = nil
         network.writer = nil
+        network.moshTransport = nil
         state = .disconnected
+        transport?.stop()
         Task { try? await client?.close() }
     }
 
@@ -432,5 +551,13 @@ private extension UserDefaults {
     /// connecting output) when the user has never touched the setting.
     var verboseConnectingEnabled: Bool {
         object(forKey: AppSettingsKeys.verboseConnecting) == nil || bool(forKey: AppSettingsKeys.verboseConnecting)
+    }
+
+    /// Defaults to `false`: unlike Auto-Reconnect and Verbose Connecting,
+    /// this opts into extra work on every connect (an SSH exec round trip)
+    /// for a feature that, so far, only detects and reports Mosh
+    /// availability -- it doesn't yet do anything with it.
+    var autoUpgradeToMoshEnabled: Bool {
+        bool(forKey: AppSettingsKeys.autoUpgradeToMosh)
     }
 }

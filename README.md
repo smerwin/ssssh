@@ -134,6 +134,30 @@ MIT-licensed; their required notices are preserved in [NOTICE.md](NOTICE.md).
   handshake internals (key exchange, algorithm negotiation) at all, so
   this can't show true protocol-level detail -- it narrates the lifecycle
   steps the app itself controls, not a tap into lower-level logging.
+- **Auto-Upgrade to Mosh** (Settings, off by default): after authenticating,
+  runs `mosh-server new` over the same SSH connection to check whether the
+  remote host has [Mosh](https://mosh.org/) installed. If it is, opens a
+  real Mosh UDP session to it and waits up to 5 seconds for proof the path
+  actually works end to end (mosh-server never speaks first, so silence
+  within that window usually means a firewall is blocking UDP); once
+  confirmed, the SSH connection is closed and the rest of the session --
+  keystrokes, terminal output, resizing -- runs over Mosh instead. Every
+  step is reported as a `debug1:`-style line when Verbose Connecting is
+  also on: detection, the upgrade attempt, confirmation or the UDP timeout,
+  and any error a live Mosh session hits later (which drops the session the
+  same way an SSH drop does, so Auto-Reconnect can retry it). If Mosh isn't
+  installed, or its UDP path is unreachable, the session just continues
+  over SSH as if the toggle were off.
+- **Predictive local echo and roaming**, once a session is running over
+  Mosh: typed characters render instantly, underlined, before the
+  server's own echo confirms them -- mosh's signature responsiveness
+  feature, verified against a real terminal emulator to render correctly
+  and reconcile without duplicating anything once the real echo arrives.
+  A session also survives its local network interruption or changing out
+  from under it (confirmed against a real `mosh-server` through an
+  induced ~15-second network blackout) without needing to reconnect over
+  SSH -- the same encrypted session just keeps going once a path is
+  available again.
 
 ### 4. Hosts and connections
 
@@ -156,7 +180,6 @@ MIT-licensed; their required notices are preserved in [NOTICE.md](NOTICE.md).
 
 - SFTP/file browser
 - Port forwarding / tunneling UI
-- Mosh support
 - Snippet libraries, scriptable automation, or a command palette
 - Team/shared host or key management
 
@@ -174,6 +197,27 @@ worth knowing before relying on them:
   Key, file-picker only -- no paste). See CLAUDE.md for why RSA/ECDSA
   import isn't a small addition.
 - **No rectangular text selection** in the terminal.
+- **Predictive local echo is deliberately simplified, not frame-based
+  like real mosh.** `MoshPredictionEngine` (`Sources/Mosh/`) predicts by
+  drawing an underlined preview character and moving the cursor back,
+  rather than maintaining mosh's own mirrored terminal framebuffer with
+  epoch/glitch tracking -- see its doc comment for the full reasoning and
+  the specific, rare case (a real byte arriving that doesn't match a
+  still-outstanding prediction) where a stray underlined character can be
+  left on screen until something else overwrites that cell. The
+  underlying terminal content itself is never at risk in that case --
+  only ever a cosmetic artifact, not data loss or corruption.
+- **Roaming's local-network-change detection is real but only
+  partially provable in development.** `MoshTransport` recovers from an
+  actual, induced network blackout (verified against a real
+  `mosh-server`, blocking and restoring UDP traffic for ~15 seconds) and
+  from `NWPathMonitor`-reported local path changes -- but a genuine
+  Wi-Fi-to-cellular handoff on a physical device hasn't been exercised,
+  only reasoned through and code-reviewed.
+- `MoshTransport` also intentionally simplifies a few things real mosh
+  does adaptively (no send pipelining, no SRTT-based retransmission
+  timing) -- see its doc comment for specifics, and CLAUDE.md's Mosh
+  section for the full picture.
 
 ## Building locally
 
