@@ -50,7 +50,7 @@ struct SettingsView: View {
                 Section {
                     Toggle("Auto-Upgrade to Mosh", isOn: $autoUpgradeToMosh)
                 } footer: {
-                    Text("When connecting, check whether the remote host has mosh-server installed. Detection is reported in the terminal when Verbose Connecting is also on. Sessions do not yet actually run over Mosh -- this only detects and reports availability so far.")
+                    Text("When connecting, check whether the remote host has mosh-server installed, and if so, run the session over Mosh instead of plain SSH -- surviving network changes and dropped Wi-Fi without reconnecting. Each step is reported in the terminal when Verbose Connecting is also on. Falls back to plain SSH automatically if Mosh isn't available.")
                 }
             }
             .navigationTitle("Settings")

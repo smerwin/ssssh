@@ -8,15 +8,19 @@ smerwin's simple ssh — a minimal, native SSH client for iPhone and iPad.
 
 ## What it does
 
-Three things, done well:
+Four things, done well:
 
 1. **Generate modern SSH keys** on-device and keep them safe.
 2. **Copy a key to a server** the way `ssh-copy-id` does, without touching a
    desktop.
 3. **Open a real terminal** to that server — green phosphor text on black,
    full PTY support for curses apps like `vim`, `tmux`, and `htop`.
+4. **Optionally upgrade that session to [Mosh](https://mosh.org/)** —
+   survives a dropped Wi-Fi connection or switching networks entirely
+   without reconnecting, with predictive local echo for snappy typing over
+   high-latency links.
 
-Everything else (SFTP browsing, port forwarding, Mosh, config sync) is
+Everything else (SFTP browsing, port forwarding, config sync) is
 explicitly out of scope for v1. This is a terminal, not an IDE.
 
 ## Why does it do this
@@ -115,6 +119,14 @@ MIT-licensed; their required notices are preserved in [NOTICE.md](NOTICE.md).
   reconnects any dropped session when the app returns to the foreground
   (`scenePhase` -> `.active`) regardless of the Auto-Reconnect setting below
   -- the user foregrounding the app is itself a signal they want back in.
+- **Backgrounding keeps sessions alive for up to five minutes**: while the
+  app is backgrounded (including the screen simply locking), every
+  connected session gets a harmless keepalive nudge every 20 seconds, using
+  iOS's limited background-execution allowance, so a connection has a
+  chance to survive that long instead of going stale the moment the screen
+  turns off. Past that five-minute cap, or if it drops anyway, the
+  reconnect-on-foreground behavior above (or Auto-Reconnect below) picks it
+  back up.
 - **Auto-Reconnect** (Settings, on by default): when a session drops
   unexpectedly (network blip, remote hangup, auth failure) while the app is
   already in the foreground, it's automatically reconnected with
@@ -135,19 +147,22 @@ MIT-licensed; their required notices are preserved in [NOTICE.md](NOTICE.md).
   this can't show true protocol-level detail -- it narrates the lifecycle
   steps the app itself controls, not a tap into lower-level logging.
 - **Auto-Upgrade to Mosh** (Settings, off by default): after authenticating,
-  runs `mosh-server new` over the same SSH connection to check whether the
-  remote host has [Mosh](https://mosh.org/) installed. If it is, opens a
-  real Mosh UDP session to it and waits up to 5 seconds for proof the path
-  actually works end to end (mosh-server never speaks first, so silence
-  within that window usually means a firewall is blocking UDP); once
-  confirmed, the SSH connection is closed and the rest of the session --
-  keystrokes, terminal output, resizing -- runs over Mosh instead. Every
-  step is reported as a `debug1:`-style line when Verbose Connecting is
-  also on: detection, the upgrade attempt, confirmation or the UDP timeout,
-  and any error a live Mosh session hits later (which drops the session the
-  same way an SSH drop does, so Auto-Reconnect can retry it). If Mosh isn't
-  installed, or its UDP path is unreachable, the session just continues
-  over SSH as if the toggle were off.
+  checks whether the remote host has [Mosh](https://mosh.org/) installed by
+  running `mosh-server new` over the same SSH connection, at the same time
+  a plain SSH shell is being requested -- whichever one actually confirms
+  first is the one that goes live, so checking for Mosh never adds delay
+  to a normal SSH connection. Confirming Mosh means proof its UDP path
+  actually works end to end, not just that `mosh-server` started
+  (`mosh-server` never speaks first, so silence for 2 seconds usually means
+  a firewall is blocking UDP); once confirmed, the SSH connection is closed
+  and the rest of the session -- keystrokes, terminal output, resizing --
+  runs over Mosh instead. Every step is reported as a `debug1:`-style line
+  when Verbose Connecting is also on: detection, the upgrade attempt,
+  confirmation or the UDP timeout, and any error a live Mosh session hits
+  later (which drops the session the same way an SSH drop does, so
+  Auto-Reconnect can retry it). If Mosh isn't installed, or its UDP path is
+  unreachable, the session just continues over SSH as if the toggle were
+  off, with no added delay from having tried.
 - **Predictive local echo and roaming**, once a session is running over
   Mosh: typed characters render instantly, underlined, before the
   server's own echo confirms them -- mosh's signature responsiveness
@@ -277,10 +292,11 @@ Two things worth knowing before touching the project setup:
   SwiftData, no server, no account system.
 - **Concurrency**: `SSHConnection` and `HostKeyStore` are `@MainActor` and
   `@Observable` for UI binding, but Citadel's own types (`SSHClient`,
-  `SSHAuthenticationMethod`, `TTYStdinWriter`) aren't Sendable-audited, so
-  the actual connect/PTY-read work runs in a detached, non-isolated task
-  that hops back to the main actor only to publish `state`/`onOutput`. See
-  the doc comments on `SSHConnection` and `HostKeyStore` for the reasoning.
+  `SSHAuthenticationMethod`, `TTYStdinWriter`, `TTYOutput`) aren't
+  Sendable-audited, so the actual connect/PTY-read work runs in a detached,
+  non-isolated task that hops back to the main actor only to publish
+  `state`/`onOutput`. See the doc comments on `SSHConnection` and
+  `HostKeyStore` for the reasoning.
 
 ## Data model
 
