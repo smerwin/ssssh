@@ -49,6 +49,31 @@ private final class SingleResume: @unchecked Sendable {
     }
 }
 
+/// Tells the Mosh-vs-plain-SSH handoff race apart from a genuine failure.
+/// Both a speculative PTY channel and a Mosh bootstrap+confirm attempt are
+/// opened concurrently on the same `client` (see `runSession`'s doc comment
+/// on the race) -- if Mosh wins, it closes `client` to free up the port,
+/// which also forces the still-open speculative PTY channel to fail. That
+/// failure is expected, not a real drop, so it must not trigger
+/// `finishCleanly`/`finishWithDrop`. Set synchronously, as the last thing
+/// before that `client.close()` call, so there's no window where the
+/// resulting channel failure could be observed before this flag is true --
+/// a plain `var` can't safely cross into the `Task { ... }` `attemptMoshUpgrade`
+/// runs in, hence the `@unchecked Sendable` wrapper (only ever written once,
+/// from that single task, and read afterward).
+private final class HandoffOutcome: @unchecked Sendable {
+    var moshWon = false
+}
+
+/// Carries a real read error on the speculative PTY channel's reader task
+/// (see `runSession`) out to the code that decides whether to rethrow it.
+/// Needed because that reader runs as its own `Task { ... }`, decoupled
+/// from the handoff decision so it's never what the decision itself is
+/// blocked on -- see the race's doc comment for why.
+private final class ReaderFailure: @unchecked Sendable {
+    var error: Error?
+}
+
 /// A single interactive SSH session backed by Citadel, feeding decoded PTY
 /// output to whichever terminal view is currently displaying it.
 ///
@@ -159,6 +184,15 @@ final class SSHConnection: Identifiable, Hashable, @unchecked Sendable {
     private var consecutiveFailureCount = 0
     nonisolated private static let baseReconnectDelay = Duration.seconds(1)
     nonisolated private static let maxReconnectDelay = Duration.seconds(30)
+
+    /// How long `attemptMoshUpgrade` waits for proof of real UDP
+    /// connectivity before giving up on Mosh for this connection attempt.
+    /// Down from an original 5s -- on a working path, `MoshTransport`
+    /// typically confirms within a few hundred ms of the bootstrap
+    /// finishing, so 5s was mostly just how long a *blocked* path made you
+    /// wait before falling back. Still a guess, not tuned against a real
+    /// high-latency link -- see CLAUDE.md's Mosh section, "Still open".
+    nonisolated private static let moshConfirmationTimeout: TimeInterval = 2
 
     init(host: SSHHost) {
         self.host = host
@@ -316,16 +350,20 @@ final class SSHConnection: Identifiable, Hashable, @unchecked Sendable {
         }
 
         // Bootstraps `mosh-server` over `client`, opens a `MoshTransport` to
-        // it, and waits up to 5s for proof of real UDP connectivity (mosh-
-        // server never sends first, so silence within the timeout typically
-        // means a firewall is blocking UDP outright) before committing.
+        // it, and waits up to `moshConfirmationTimeout` for proof of real
+        // UDP connectivity (mosh-server never sends first, so silence
+        // within the timeout typically means a firewall is blocking UDP
+        // outright) before committing. Runs concurrently with a speculative
+        // PTY channel opened on the same `client` -- see `runSession`'s doc
+        // comment on the handoff race -- rather than gating that PTY open
+        // on this function's outcome the way it used to.
         // Returns `true` once the switch has happened -- `client` has been
         // closed and `network.moshTransport` is now the live data path, so
         // the caller must skip opening a PTY over SSH. Returns `false` for
         // every other outcome (Mosh unavailable, bootstrap failed, UDP
         // unreachable), in which case `client` is still open and untouched
         // for the caller to proceed with the normal SSH PTY path.
-        func attemptMoshUpgrade(client: Citadel.SSHClient) async -> Bool {
+        func attemptMoshUpgrade(client: Citadel.SSHClient, handoff: HandoffOutcome) async -> Bool {
             let bootstrap: MoshBootstrap.Result
             do {
                 bootstrap = try await MoshBootstrap.detect(client: client)
@@ -345,18 +383,19 @@ final class SSHConnection: Identifiable, Hashable, @unchecked Sendable {
                     resumer.resume(false)
                 }
                 transport.start()
-                DispatchQueue.global().asyncAfter(deadline: .now() + 5) {
+                DispatchQueue.global().asyncAfter(deadline: .now() + Self.moshConfirmationTimeout) {
                     resumer.resume(false)
                 }
             }
 
             guard established else {
-                await emitDiagnostic("debug1: Mosh UDP path did not respond within 5s (likely blocked by a firewall); continuing over SSH.")
+                await emitDiagnostic("debug1: Mosh UDP path did not respond within \(Int(Self.moshConfirmationTimeout))s (likely blocked by a firewall); continuing over SSH.")
                 transport.stop()
                 return false
             }
 
             await emitDiagnostic("debug1: Mosh UDP path confirmed; closing SSH connection and switching this session to Mosh.")
+            await MainActor.run { self.state = .connected }
 
             transport.onOutput = { [weak self] bytes in
                 guard let self else { return }
@@ -370,6 +409,15 @@ final class SSHConnection: Identifiable, Hashable, @unchecked Sendable {
                     await finishWithDrop(.failed(message))
                 }
             }
+
+            // Set before `client.close()` below, not after `attemptMoshUpgrade`
+            // returns -- that close is what makes the concurrently-open
+            // speculative PTY channel fail, and this flag is how the code
+            // reacting to that failure tells it apart from a real drop. If
+            // this were set by the caller after awaiting this function's
+            // return value instead, there'd be a real window where that
+            // failure could be observed with the flag still `false`.
+            handoff.moshWon = true
 
             network.moshTransport = transport
             network.client = nil
@@ -413,8 +461,7 @@ final class SSHConnection: Identifiable, Hashable, @unchecked Sendable {
             // `disconnect()` that arrived while it was in flight (e.g. closing
             // a session that's still "Connecting…") has nothing to close yet
             // and can only cancel this task. Check for that now, before
-            // publishing `.connected` and opening a PTY the user already
-            // asked to close.
+            // opening a PTY the user already asked to close.
             guard !Task.isCancelled else {
                 clearNetworkState()
                 try? await client.close()
@@ -423,17 +470,28 @@ final class SSHConnection: Identifiable, Hashable, @unchecked Sendable {
 
             await emitDiagnostic("debug1: Authentication succeeded (\(Self.algorithmDescription(for: material))) for user '\(host.username)'.")
             await MainActor.run {
-                self.state = .connected
                 self.consecutiveFailureCount = 0
                 self.hasConnectedBefore = true
             }
 
-            if UserDefaults.standard.autoUpgradeToMoshEnabled, await attemptMoshUpgrade(client: client) {
-                // `network.moshTransport` is now the live data path and
-                // `client` has been closed -- nothing left to do here, the
-                // transport keeps running independently until `disconnect()`
-                // or its own `onError` fires.
-                return
+            // `.connected` deliberately isn't published yet -- whichever of
+            // Mosh or plain SSH ends up live publishes it once it's actually
+            // about to produce output, not before (see below).
+            //
+            // Mosh-vs-SSH handoff race: `attemptMoshUpgrade` (an SSH round
+            // trip to bootstrap mosh-server, then a UDP round trip to
+            // confirm it) used to run to completion *before* a PTY was even
+            // requested, so a host where it eventually failed or fell back
+            // still paid for that whole sequence serially first. Now a PTY
+            // channel is opened on `client` at the same time as the Mosh
+            // attempt runs, and whichever actually confirms first is the one
+            // that goes live -- the other is discarded, having never been
+            // shown to the user or sent a keystroke, so there's nothing to
+            // reconcile between them.
+            let handoff = HandoffOutcome()
+            let moshTask = Task<Void, Never> {
+                guard UserDefaults.standard.autoUpgradeToMoshEnabled else { return }
+                _ = await attemptMoshUpgrade(client: client, handoff: handoff)
             }
 
             let ptyRequest = SSHChannelRequestEvent.PseudoTerminalRequest(
@@ -445,23 +503,66 @@ final class SSHConnection: Identifiable, Hashable, @unchecked Sendable {
                 terminalPixelHeight: 0,
                 terminalModes: SSHTerminalModes([:])
             )
-            await emitDiagnostic("debug1: Requesting pty (xterm-256color, 80x24).")
+            await emitDiagnostic("debug1: Requesting pty (xterm-256color, 80x24) alongside the Mosh attempt.")
 
             do {
                 try await client.withPTY(ptyRequest) { inbound, outbound in
+                    // Reads `inbound` on its own, independent task rather
+                    // than inline in this loop -- the handoff decision below
+                    // needs to be able to act the instant Mosh's outcome is
+                    // known even if this shell has gone quiet waiting for a
+                    // keystroke nobody's sent yet (nothing types into either
+                    // side until the race is decided), so it can never be
+                    // what the decision itself is blocked on. `AsyncStream`
+                    // decouples the two: this task only ever appends to it.
+                    let (stream, continuation) = AsyncStream<[UInt8]>.makeStream()
+                    let readerFailure = ReaderFailure()
+                    let readerTask = Task {
+                        do {
+                            for try await chunk in inbound {
+                                switch chunk {
+                                case .stdout(let buffer), .stderr(let buffer):
+                                    continuation.yield(Array(buffer.readableBytesView))
+                                }
+                            }
+                        } catch {
+                            readerFailure.error = error
+                        }
+                        continuation.finish()
+                    }
+
+                    await moshTask.value
+                    guard !handoff.moshWon else {
+                        // Mosh won and already closed `client` -- that's
+                        // what ends `readerTask`'s loop above; whatever it
+                        // saw there is an expected side effect of that
+                        // close, not a real failure, so it's discarded
+                        // rather than inspected.
+                        _ = await readerTask.value
+                        return
+                    }
+
+                    // SSH won: become the live data path. Nothing above was
+                    // ever shown or interactive, so there's no lost or
+                    // duplicated input to reconcile -- same as the PTY open
+                    // this replaces, just no longer serialized after Mosh.
                     network.writer = outbound
                     if let startupCommand = host.startupCommand, !startupCommand.isEmpty {
                         try? await outbound.write(ByteBuffer(string: startupCommand + "\n"))
                     }
-                    for try await chunk in inbound {
-                        switch chunk {
-                        case .stdout(let buffer), .stderr(let buffer):
-                            let bytes = Array(buffer.readableBytesView)
-                            await MainActor.run { self.onOutput?(bytes) }
-                        }
+                    await MainActor.run { self.state = .connected }
+
+                    for await chunk in stream {
+                        await MainActor.run { self.onOutput?(chunk) }
+                    }
+                    _ = await readerTask.value
+                    if let error = readerFailure.error {
+                        throw error
                     }
                 }
-                await finishCleanly()
+                if !handoff.moshWon {
+                    await finishCleanly()
+                }
             } catch let error as NIO.ChannelError where error == .alreadyClosed {
                 // Citadel's withPTY tries to close the channel again on the
                 // way out; if the remote end already hung up (e.g. the user
@@ -469,12 +570,19 @@ final class SSHConnection: Identifiable, Hashable, @unchecked Sendable {
                 // real failure -- verified against a real server where the
                 // PTY session completed successfully and only the trailing
                 // close-after-close raised this. Same as the clean-exit
-                // case above: no auto-reconnect.
-                await finishCleanly()
+                // case above: no auto-reconnect. Also reached, harmlessly,
+                // when Mosh won this connection's handoff race and closed
+                // `client` out from under this still-open speculative
+                // channel -- `handoff.moshWon` tells the two apart.
+                if !handoff.moshWon {
+                    await finishCleanly()
+                }
             } catch {
-                let message = Self.describe(error)
-                await emitDiagnostic("debug1: \(message)")
-                await finishWithDrop(.failed(message))
+                if !handoff.moshWon {
+                    let message = Self.describe(error)
+                    await emitDiagnostic("debug1: \(message)")
+                    await finishWithDrop(.failed(message))
+                }
             }
         } catch {
             let message = Self.describe(error)
