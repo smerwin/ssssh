@@ -338,9 +338,19 @@ final class MoshTransport: @unchecked Sendable {
             payload: payload
         )
         connection.send(content: Data(datagram), completion: .contentProcessed { [weak self] error in
-            if let error {
-                self?.reportFatalError(error)
-            }
+            guard let self, let error else { return }
+            // Same reasoning as `receiveLoop`'s error handling: a send
+            // failure on the live connection is exactly what roaming exists
+            // to recover from, not an immediate fatal error. Concretely,
+            // this is the path that used to surface as "NWError 89"
+            // (POSIX ECANCELED) right after resuming a backgrounded
+            // session -- iOS can invalidate a UDP `NWConnection` while the
+            // app is suspended without ever posting a `.failed` state
+            // update, so the first heartbeat send after resuming was the
+            // first thing to discover it, and reporting that as fatal
+            // killed the whole session instead of transparently rebuilding
+            // it the way a Wi-Fi-to-cellular handoff already does.
+            self.rebuildConnection(reason: "send error: \(error.localizedDescription)")
         })
     }
 
