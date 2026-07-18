@@ -80,6 +80,29 @@ final class MoshTransport: @unchecked Sendable {
     /// automatically and report a hard failure via `onError` instead --
     /// otherwise a genuinely dead network would retry forever, silently.
     private static let maxConsecutiveRebuildFailures = 5
+    /// Set the first (and only) time `onError` fires, from any of this
+    /// type's several independent call sites (`rebuildConnection`'s own
+    /// give-up, a send failure, a protocol-version mismatch). Without this,
+    /// a persistently broken network kept calling `onError` again on
+    /// *every* subsequent rebuild attempt -- `consecutiveRebuildFailures`
+    /// only ever grows, it's never capped/reset once exceeded, so nothing
+    /// stopped `rebuildConnection` from re-triggering the give-up report
+    /// every ~3-12s forever. Each firing reached `SSHConnection`'s
+    /// per-session `onError` closure, which unconditionally spawned a
+    /// fresh `finishWithDrop`/`onDrop`/reconnect cycle -- confirmed in
+    /// production as dozens of concurrent reconnect-and-upgrade-to-Mosh
+    /// attempts stacking up for a single dropped session. `onError` must
+    /// fire at most once per transport instance; from then on this
+    /// transport is done and waiting to be torn down by its owner.
+    private var hasReportedFatalError = false
+
+    /// Not `private` so it's directly testable without needing a live
+    /// `NWConnection` to trigger one of the real internal call sites.
+    func reportFatalError(_ error: Error) {
+        guard !hasReportedFatalError else { return }
+        hasReportedFatalError = true
+        onError?(error)
+    }
     /// A plain UDP blackhole (packets silently dropped, e.g. a NAT mapping
     /// expiring or a network going out of range) doesn't necessarily
     /// surface as an `NWConnection` failure at all -- UDP has no
@@ -209,7 +232,12 @@ final class MoshTransport: @unchecked Sendable {
     /// connection is up, so a real `mosh-server` learns the new address as
     /// quickly as possible rather than waiting for the next heartbeat.
     private func rebuildConnection(reason: String) {
-        guard !isStopped else { return }
+        // Once a fatal error has been reported, this transport is done --
+        // don't keep rebuilding (and don't let a still-firing heartbeat or
+        // path-monitor callback re-trigger `reportFatalError` and report
+        // the same give-up again; that's exactly what used to keep firing
+        // every ~3-12s indefinitely).
+        guard !isStopped, !hasReportedFatalError else { return }
         connection.stateUpdateHandler = nil
         connection.cancel()
 
@@ -220,7 +248,7 @@ final class MoshTransport: @unchecked Sendable {
 
         consecutiveRebuildFailures += 1
         if consecutiveRebuildFailures > Self.maxConsecutiveRebuildFailures {
-            onError?(MoshTransportError.roamingGaveUp(reason: reason))
+            reportFatalError(MoshTransportError.roamingGaveUp(reason: reason))
             return
         }
         sendState()
@@ -295,7 +323,7 @@ final class MoshTransport: @unchecked Sendable {
                 sendDatagram(fragment.serialize())
             }
         } catch {
-            onError?(error)
+            reportFatalError(error)
         }
     }
 
@@ -311,7 +339,7 @@ final class MoshTransport: @unchecked Sendable {
         )
         connection.send(content: Data(datagram), completion: .contentProcessed { [weak self] error in
             if let error {
-                self?.onError?(error)
+                self?.reportFatalError(error)
             }
         })
     }
@@ -384,7 +412,7 @@ final class MoshTransport: @unchecked Sendable {
         guard assembly.addFragment(fragment) else { return }
         guard let instruction = try? assembly.takeAssembly() else { return }
         guard instruction.protocolVersion == MoshTransportInstruction.expectedProtocolVersion else {
-            onError?(MoshTransportError.protocolVersionMismatch)
+            reportFatalError(MoshTransportError.protocolVersionMismatch)
             return
         }
 

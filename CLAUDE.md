@@ -550,6 +550,73 @@ re-bootstrap over SSH. A genuine Wi-Fi-to-cellular interface handoff on a
 physical device hasn't been exercised, only this induced-blackhole
 scenario and `NWPathMonitor`'s own reported path changes.
 
+### A real bug this surfaced: `onError` firing repeatedly caused a
+### reconnect storm
+
+Reported directly: auto-reconnect on a dropped Mosh session "crashed
+spawning dozens of attempted reconnections and upgrading them all to
+mosh at once, then reconnecting the ssh connection we dropped for mosh."
+The root cause was `onError` firing *repeatedly* rather than once,
+compounding through three separate layers with no de-duplication at any
+of them:
+
+1. **`MoshTransport`**: `consecutiveRebuildFailures` grew unboundedly and
+   was never capped/reset after first exceeding the threshold, so
+   `rebuildConnection` re-reported `roamingGaveUp` via `onError` on
+   *every* subsequent rebuild attempt -- roughly every 3-12s, forever,
+   for as long as the network stayed down. Several other internal paths
+   (a send completion error, a fragmenter error, a protocol-version
+   mismatch) could also call `onError` directly, with nothing preventing
+   any of them from firing more than once either.
+2. **`SSHConnection.attemptMoshUpgrade`'s post-commit `onError` handler**
+   had no guard against being invoked more than once -- each firing
+   unconditionally spawned a fresh `finishWithDrop`/`onDrop` cycle.
+3. **`SessionManager`'s `onDrop` -> `reconnectWithBackoff`**: each
+   `onDrop` firing scheduled a *new* backoff `Task` without cancelling
+   any previous one still waiting out its delay, so repeated firings
+   left multiple independent backoff timers running concurrently, each
+   eventually calling `connect()` on its own schedule.
+4. **`SSHConnection.connect()`'s re-entrancy guard** was
+   `network.client == nil` -- but `network.client` isn't set until deep
+   inside the asynchronously-running SSH handshake inside `runSession`,
+   so several `connect()` calls landing within that window (exactly what
+   #3 produced) could all observe it as still nil and each spawn their
+   *own* independent `runSession`: a real second (third, fourth, ...) SSH
+   connection, each attempting its own Mosh upgrade concurrently. Some of
+   those concurrent attempts fail their own upgrade and fall through to
+   the plain SSH PTY path instead, all racing to feed the same
+   `onOutput` -- which is what "reconnecting the ssh connection we
+   dropped for mosh" looked like from the outside.
+
+Fixed at every layer rather than just the first one, since each is a
+real, independent bug worth not reintroducing on its own:
+1. `MoshTransport.hasReportedFatalError`/`reportFatalError(_:)`: `onError`
+   fires at most once per transport instance, from any call site.
+   `rebuildConnection` also checks this flag and stops rebuilding once
+   it's set, rather than continuing to churn a transport its owner is
+   about to tear down anyway. Verified with a direct unit test
+   (`MoshTransportTests`) and, more importantly, a real ~90-second
+   induced blackout against a live `mosh-server` sampling the fire count
+   over time: it settled at exactly 1 and never grew further, where the
+   old code would have kept incrementing roughly every 3s throughout.
+2. `reconnectWithBackoff` now cancels any existing pending `reconnectTask`
+   before scheduling a new one.
+3. `SSHConnection.connect()`'s re-entrancy guard is now `connectTask ==
+   nil` instead of `network.client == nil` -- `connectTask` is set
+   synchronously within `connect()` itself (nothing awaited between the
+   guard check and the set), so on this `@MainActor`-isolated class no
+   other call to `connect()` can interleave and slip through, regardless
+   of how long the underlying handshake takes. `connectTask` is now
+   cleared in `finishCleanly`/`finishWithDrop` (not just `disconnect()`),
+   since it represents "a session is active" for the connection's *entire*
+   lifetime now, not just the initial handshake -- see its updated doc
+   comment.
+
+If you ever "simplify" any one of these back out on the theory that the
+others already cover it, expect this exact failure mode to return under
+different specific timing: a single dropped Mosh session spawning
+multiple real, concurrent SSH connections.
+
 ### Still open
 
 - Hardening `MoshTransport`'s remaining simplifications (no send
