@@ -15,6 +15,7 @@
 		1180E352B2390AF8FCD2906E /* MoshProtobuf.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3612B0FFC5B0F56BAEFAFB43 /* MoshProtobuf.swift */; };
 		1202E961C478E58294DD4FCD /* MoshOCBTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1EAF0C42375EC9E1ECFF45F2 /* MoshOCBTests.swift */; };
 		1335786151BC0EFB30F2D43C /* HostKeyStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8DDB708C5F5E8FDB459230F8 /* HostKeyStoreTests.swift */; };
+		15F416C6F59FCC426E7A3406 /* MoshTransportTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE7168488C5EDC2F8E0CD38D /* MoshTransportTests.swift */; };
 		1C238A3BEDE2C2FBEB99CD02 /* SSHConnection.swift in Sources */ = {isa = PBXBuildFile; fileRef = C6F1F3497C6EAE8353915767 /* SSHConnection.swift */; };
 		2642117F49E98E090CC06422 /* TerminalTheme.swift in Sources */ = {isa = PBXBuildFile; fileRef = DB5762D5CFBEF2BCFFBA74A2 /* TerminalTheme.swift */; };
 		2AA164B80BDC45B6130B692E /* TerminalViewStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 572153F23C6A8561229486FA /* TerminalViewStoreTests.swift */; };
@@ -134,6 +135,7 @@
 		9C1DCCFA42095665E2E964B5 /* SessionManagerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionManagerTests.swift; sourceTree = "<group>"; };
 		A1C12A2E6A2A31B6A04A647B /* sssshTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = sssshTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		A64C9DE84719618DC3BA55D4 /* SSHPrivateKeyMaterial.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SSHPrivateKeyMaterial.swift; sourceTree = "<group>"; };
+		AE7168488C5EDC2F8E0CD38D /* MoshTransportTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MoshTransportTests.swift; sourceTree = "<group>"; };
 		B09EE9290D723E42EAB05386 /* MoshMessages.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MoshMessages.swift; sourceTree = "<group>"; };
 		B60A6E5AC6A76C8B6159900A /* TerminalAccessoryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalAccessoryView.swift; sourceTree = "<group>"; };
 		B66FDE7D7C228B51648F7E71 /* ScanlineOverlay.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScanlineOverlay.swift; sourceTree = "<group>"; };
@@ -273,6 +275,7 @@
 				1EAF0C42375EC9E1ECFF45F2 /* MoshOCBTests.swift */,
 				483059594C84387D2DE5677B /* MoshPredictionEngineTests.swift */,
 				762052CF01063AE350448381 /* MoshSessionTests.swift */,
+				AE7168488C5EDC2F8E0CD38D /* MoshTransportTests.swift */,
 				9C1DCCFA42095665E2E964B5 /* SessionManagerTests.swift */,
 				F38F86FED26BE21AC974655A /* SSHConnectionStateTests.swift */,
 				F48678B4AF997B7330FF23FF /* SSHKeyTests.swift */,
@@ -549,6 +552,7 @@
 				1202E961C478E58294DD4FCD /* MoshOCBTests.swift in Sources */,
 				631C93203FAC5F5074492FB0 /* MoshPredictionEngineTests.swift in Sources */,
 				75CAD01591E3B2A74D081DF6 /* MoshSessionTests.swift in Sources */,
+				15F416C6F59FCC426E7A3406 /* MoshTransportTests.swift in Sources */,
 				FC9E1D71FF618A0E83570671 /* SSHConnectionStateTests.swift in Sources */,
 				DB11D13B8EE7A206C19AB234 /* SSHKeyTests.swift in Sources */,
 				F015BCE29F6F43F53A93593C /* SSHPrivateKeyMaterialTests.swift in Sources */,

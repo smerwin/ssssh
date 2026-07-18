@@ -125,12 +125,17 @@ final class SSHConnection: Identifiable, Hashable, @unchecked Sendable {
     private let network = SSHNetworkState()
     private var userInitiatedClose = false
 
-    /// Handle to the in-flight `connect()`/`runSession` task, so `disconnect()`
-    /// can cancel a connection attempt that hasn't finished its handshake yet.
-    /// Without this, closing a session while it's still "Connecting…" left the
-    /// handshake running in the background with nothing watching it -- it would
-    /// complete moments later, publish `.connected`, and open a PTY as if the
-    /// close had never happened.
+    /// Handle to the in-flight `connect()`/`runSession` task -- non-nil for
+    /// the *entire* lifetime of a session, not just while connecting: it's
+    /// only cleared once `runSession` actually finishes (`finishCleanly`/
+    /// `finishWithDrop`) or `disconnect()` tears things down. This doubles
+    /// as `connect()`'s re-entrancy guard (see there for why `network.client
+    /// == nil` alone wasn't sufficient) and lets `disconnect()` cancel a
+    /// connection attempt that hasn't finished its handshake yet -- without
+    /// that second part, closing a session while it's still "Connecting…"
+    /// left the handshake running in the background with nothing watching
+    /// it, and it would complete moments later, publish `.connected`, and
+    /// open a PTY as if the close had never happened.
     private var connectTask: Task<Void, Never>?
 
     /// Handle to the pending delay scheduled by `reconnectWithBackoff`, so a
@@ -164,6 +169,13 @@ final class SSHConnection: Identifiable, Hashable, @unchecked Sendable {
     /// have happened in a row. Used for auto-reconnect; `connect()` itself
     /// (manual retry, app-foreground reconnect) stays immediate.
     func reconnectWithBackoff(keyStore: KeyStore, hostKeyStore: HostKeyStore) {
+        // Without this, a second `onDrop` firing for the same drop (there
+        // used to be several independent ways that could happen -- see
+        // `MoshTransport.hasReportedFatalError`'s doc comment) would leave
+        // the first backoff timer running uncancelled while a second one
+        // started alongside it, each eventually calling `connect()` on its
+        // own schedule.
+        reconnectTask?.cancel()
         let delay = Self.backoffDelay(forFailureCount: consecutiveFailureCount)
         consecutiveFailureCount += 1
         state = .waitingToReconnect(at: Date.now.addingTimeInterval(Double(delay.components.seconds)))
@@ -189,7 +201,20 @@ final class SSHConnection: Identifiable, Hashable, @unchecked Sendable {
     }
 
     func connect(keyStore: KeyStore, hostKeyStore: HostKeyStore) {
-        guard network.client == nil else { return }
+        // `connectTask == nil` (not `network.client == nil`) is the
+        // re-entrancy guard here on purpose: `network.client` isn't set
+        // until deep inside the asynchronously-running SSH handshake
+        // inside `runSession`, so two `connect()` calls landing close
+        // together (e.g. from several leftover backoff timers -- see
+        // `reconnectWithBackoff`) could previously both observe it as nil
+        // and each spawn their own independent `runSession`, opening a real
+        // second SSH connection and attempting its own Mosh upgrade
+        // concurrently with the first. `connectTask` is set synchronously,
+        // in this same function, with nothing awaited in between the check
+        // and the eventual set below -- so on this `@MainActor`-isolated
+        // class, no other call to `connect()` can interleave and slip
+        // through.
+        guard connectTask == nil else { return }
         // Cancelling any pending backoff wait here (rather than just in
         // `reconnectWithBackoff`'s own delayed closure) is what actually
         // prevents a manual/foreground reconnect from racing that delayed
@@ -250,7 +275,10 @@ final class SSHConnection: Identifiable, Hashable, @unchecked Sendable {
         // disconnect: publish `.disconnected`, nothing more.
         func finishCleanly() async {
             clearNetworkState()
-            await MainActor.run { self.state = .disconnected }
+            await MainActor.run {
+                self.connectTask = nil
+                self.state = .disconnected
+            }
         }
 
         // For a genuine unexpected drop or failure (network blip, auth
@@ -261,6 +289,11 @@ final class SSHConnection: Identifiable, Hashable, @unchecked Sendable {
         func finishWithDrop(_ newState: State) async {
             clearNetworkState()
             await MainActor.run {
+                // Clear this *before* firing `onDrop` -- `connect()`'s
+                // re-entrancy guard checks it, and a session that just
+                // ended (even if a reconnect is about to be scheduled)
+                // must look like one that's free to reconnect.
+                self.connectTask = nil
                 self.state = newState
                 if !self.userInitiatedClose {
                     self.onDrop?()
