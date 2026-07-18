@@ -25,7 +25,13 @@ final class TerminalSessionController: NSObject, TerminalViewDelegate {
 
         view.terminalDelegate = self
         connection.onOutput = { [weak view, weak self] bytes in
-            self?.predictionEngine.reconcile(hostBytes: bytes)
+            // Erase any predictions this host output abandons *before*
+            // feeding the real bytes, so a stale underlined prediction
+            // never lingers past the moment it's known to be wrong -- see
+            // MoshPredictionEngine's doc comment.
+            if let cleanup = self?.predictionEngine.reconcile(hostBytes: bytes) {
+                view?.feed(byteArray: cleanup[...])
+            }
             view?.feed(byteArray: bytes[...])
         }
 
@@ -94,12 +100,14 @@ final class TerminalSessionController: NSObject, TerminalViewDelegate {
     }
 
     func sizeChanged(source: SwiftTerm.TerminalView, newCols: Int, newRows: Int) {
-        Task { @MainActor [weak connection, predictionEngine] in
+        Task { @MainActor [weak connection, weak view, predictionEngine] in
             // A resize invalidates any assumption predictions were making
             // about cursor position -- see MoshPredictionEngine's doc
             // comment on why this app doesn't model the terminal itself
             // and so can't reconcile through a reflow.
-            predictionEngine.reset()
+            if let cleanup = predictionEngine.reset() {
+                view?.feed(byteArray: cleanup[...])
+            }
             connection?.resize(cols: newCols, rows: newRows)
         }
     }

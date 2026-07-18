@@ -17,29 +17,47 @@ import Foundation
 /// predicts by drawing an underlined preview character and then moving the
 /// cursor back to exactly where it started -- so the terminal's own real
 /// cursor position never advances until a real, confirmed byte arrives and
-/// naturally overwrites the same cell. That means confirmation needs no
-/// special handling at all: real bytes are never suppressed, delayed, or
-/// rewritten, they just draw over the prediction in place, in order.
+/// naturally overwrites the same cell.
 ///
-/// Deliberate simplifications versus real mosh, all in the direction of
-/// "never wrong, sometimes less helpful":
+/// **This assumption breaks down against raw-mode, self-redrawing programs**
+/// -- confirmed against a real report of exactly this: running `claude`
+/// (Claude Code's own CLI) over a Mosh session showed glitchy output and
+/// underlined blank cells (rendering as stray underscores) left behind
+/// under the input line. Programs like that don't echo typed characters
+/// sequentially in place; they redraw their own input box using absolute
+/// cursor positioning, so a prediction that's abandoned (see `predict`/
+/// `reconcile` below) before a real byte ever lands on its exact cell was
+/// previously left on screen forever, and a program that constantly
+/// redraws like this abandons *most* predictions, making that the common
+/// case rather than the rare one the original design assumed. Two things
+/// now guard against this:
+/// 1. Abandoning a prediction (for any reason) now returns an explicit
+///    "erase what I already drew" instruction (`CSI <n> X`, Erase
+///    Character -- blanks cells at the cursor without moving it) instead
+///    of just forgetting about it, so a stale underline can't linger.
+/// 2. `misprediction` tracks *genuine* mismatches -- a real byte that
+///    contradicts an actively pending prediction, as opposed to simply
+///    choosing not to predict an unpredictable keystroke (Enter, Backspace,
+///    arrows are normal and expected, not a sign anything's wrong). Once
+///    that happens `mispredictionCircuitBreakerThreshold` times, this
+///    engine stops predicting for the rest of its lifetime (one
+///    `MoshPredictionEngine` lives as long as its `TerminalSessionController`,
+///    i.e. the whole session including any Mosh roaming reconnects) rather
+///    than continuing to flicker predictions on and off against a program
+///    it's already shown it can't keep up with.
+///
+/// Remaining deliberate simplifications versus real mosh, all in the
+/// direction of "never wrong, sometimes less helpful":
 /// - Only predicts a single, plain printable ASCII byte (0x20-0x7E) sent
 ///   on its own -- not Enter, Backspace, arrow keys, or anything
 ///   multi-byte (real mosh predicts some of these too, under stricter
-///   rules). Anything else clears any outstanding predictions rather than
-///   risk guessing wrong about cursor motion this app doesn't model.
+///   rules).
 /// - No SRTT-adaptive show/hide -- predictions always render (underlined)
 ///   as soon as the caller decides it's safe to ask (see
-///   `TerminalSessionController`'s alternate-screen-buffer check).
-/// - No glitch/epoch tracking. On any sign of trouble -- a real byte that
-///   doesn't match the front of the pending queue, or a control/escape
-///   byte arriving while predictions are outstanding -- this abandons the
-///   whole pending queue rather than attempting partial reconciliation.
-///   In that rare case, an already-drawn underlined prediction can be left
-///   on screen until something else overwrites that cell: a real, known
-///   cosmetic limitation, not a correctness one -- the underlying terminal
-///   content itself is never at risk, since real bytes are never dropped
-///   or altered, only observed.
+///   `TerminalSessionController`'s alternate-screen-buffer check) and the
+///   circuit breaker above hasn't tripped.
+/// - No glitch/epoch tracking or partial reconciliation -- any mismatch
+///   abandons the *entire* pending queue at once.
 /// `@unchecked Sendable`: `TerminalSessionController` (nonisolated, per
 /// SwiftTerm's `TerminalViewDelegate` requirements) hops onto the main
 /// actor via `Task { @MainActor in ... }` for every call into this type,
@@ -52,17 +70,27 @@ final class MoshPredictionEngine: @unchecked Sendable {
     /// prompt), not a value mosh itself specifies.
     private static let maxPendingDepth = 20
 
-    private var pending: [UInt8] = []
+    /// How many genuine mispredictions (see the type doc comment) to
+    /// tolerate before giving up on prediction entirely for this engine's
+    /// lifetime. Low on purpose: a program that's actually compatible with
+    /// this engine's sequential-echo assumption essentially never mismatches
+    /// during normal typing, so a handful of mismatches is already a
+    /// reliable "this isn't working" signal, not noise to filter out.
+    private static let mispredictionCircuitBreakerThreshold = 3
 
-    /// Returns the bytes to feed the terminal as an instant local preview
-    /// of `keystroke`, or `nil` if this input isn't a simple printable
-    /// keystroke and shouldn't be predicted (which also abandons any
-    /// currently-pending predictions, since this app can no longer be
-    /// confident the pending queue's assumed cursor position is right).
+    private var pending: [UInt8] = []
+    private var mispredictionCount = 0
+    private var isDisabled = false
+
+    /// Returns the bytes to feed the terminal, or `nil` if there's nothing
+    /// to do. This is either an instant preview of `keystroke` (a single
+    /// plain printable ASCII byte), or -- if `keystroke` isn't predictable,
+    /// or the circuit breaker has tripped -- an erase instruction for any
+    /// previously-drawn predictions that are being abandoned unconfirmed,
+    /// so they never linger on screen (see the type doc comment).
     func predict(keystroke: [UInt8]) -> [UInt8]? {
-        guard keystroke.count == 1, let byte = keystroke.first, (0x20...0x7E).contains(byte) else {
-            pending.removeAll()
-            return nil
+        guard !isDisabled, keystroke.count == 1, let byte = keystroke.first, (0x20...0x7E).contains(byte) else {
+            return abandonPending()
         }
         guard pending.count < Self.maxPendingDepth else { return nil }
 
@@ -83,29 +111,52 @@ final class MoshPredictionEngine: @unchecked Sendable {
     }
 
     /// Observes real host bytes on their way to the terminal -- never
-    /// modifies or suppresses them, only watches. Each plain printable
-    /// byte that matches the front of the pending queue confirms that
-    /// prediction (its real echo is what draws over the earlier preview,
-    /// in exactly the same cell). Any mismatch, or any control/escape byte
-    /// arriving while predictions are outstanding, abandons the entire
-    /// queue rather than guessing at partial reconciliation.
-    func reconcile(hostBytes: [UInt8]) {
-        guard !pending.isEmpty else { return }
+    /// modifies or suppresses them, only watches -- and returns bytes to
+    /// erase any predictions abandoned as a result (`nil` if nothing needs
+    /// erasing). Each plain printable byte that matches the front of the
+    /// pending queue confirms that prediction (its real echo is what draws
+    /// over the earlier preview, in exactly the same cell). Any mismatch,
+    /// or any control/escape byte arriving while predictions are
+    /// outstanding, is a genuine misprediction: it abandons the entire
+    /// queue and counts toward the circuit breaker.
+    func reconcile(hostBytes: [UInt8]) -> [UInt8]? {
+        guard !pending.isEmpty else { return nil }
         for byte in hostBytes {
             guard !pending.isEmpty else { break }
             guard (0x20...0x7E).contains(byte), byte == pending[0] else {
-                pending.removeAll()
-                return
+                mispredictionCount += 1
+                if mispredictionCount >= Self.mispredictionCircuitBreakerThreshold {
+                    isDisabled = true
+                }
+                return abandonPending()
             }
             pending.removeFirst()
         }
+        return nil
     }
 
-    /// Drops any outstanding predictions without inspecting them --
-    /// callers use this when they know context has changed in a way this
-    /// engine can't observe on its own (e.g. the terminal was just
+    /// Drops any outstanding predictions, returning bytes to erase
+    /// whatever was already drawn for them (`nil` if nothing was pending)
+    /// -- callers use this when they know context has changed in a way
+    /// this engine can't observe on its own (e.g. the terminal was just
     /// resized, or switched into/out of the alternate screen buffer).
-    func reset() {
+    /// Doesn't count toward the circuit breaker: this is an external
+    /// signal, not evidence prediction itself is failing against whatever
+    /// program is running.
+    func reset() -> [UInt8]? {
+        abandonPending()
+    }
+
+    /// Erases exactly the cells still holding unconfirmed predictions
+    /// (`CSI <n> X`, Erase Character -- blanks `n` cells at the cursor,
+    /// which is still sitting at the true, unconfirmed base position,
+    /// without moving it) and clears the pending queue. Returns `nil` if
+    /// there was nothing pending, so callers can tell "nothing to feed"
+    /// apart from "feed this empty-ish cleanup."
+    private func abandonPending() -> [UInt8]? {
+        guard !pending.isEmpty else { return nil }
+        let count = pending.count
         pending.removeAll()
+        return Array("\u{1B}[\(count)X".utf8)
     }
 }
