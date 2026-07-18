@@ -54,6 +54,19 @@ enum MoshBootstrap {
     /// harmless no-ops on hosts that don't have them.
     private static let pathPrefix = "PATH=\"$PATH:/opt/homebrew/bin:/usr/local/bin:/home/linuxbrew/.linuxbrew/bin\""
 
+    /// The same non-interactive, non-login exec channel that leaves `PATH`
+    /// bare (see `pathPrefix`) also leaves `TERM` unset, and `mosh-server`
+    /// passes its own environment straight through to the login shell it
+    /// forks for the actual session -- so without this, that shell (and
+    /// anything running in it, e.g. Claude Code's own CLI, which reads
+    /// `$TERM` to decide how much it can render) ends up with no or a
+    /// minimal `$TERM`, looking visibly different from the same host over
+    /// plain SSH, where `SSHConnection`'s PTY request explicitly negotiates
+    /// `TERM=xterm-256color` via the protocol's own `pty-req`. Hardcoded to
+    /// match that exact value -- the whole point is parity between the two
+    /// paths, not a separate setting to keep in sync.
+    private static let termPrefix = "TERM=xterm-256color"
+
     /// A non-interactive SSH exec session doesn't necessarily carry any
     /// locale environment at all (confirmed directly: a maximally bare
     /// shell environment leaves `mosh-server` refusing to start with
@@ -111,7 +124,7 @@ enum MoshBootstrap {
     private static func run(client: Citadel.SSHClient, extraArguments: String) async throws -> String {
         var text = ""
         do {
-            let stream = try await client.executeCommandStream("\(pathPrefix) mosh-server new -s\(extraArguments)")
+            let stream = try await client.executeCommandStream("\(pathPrefix) \(termPrefix) mosh-server new -s\(extraArguments)")
             for try await chunk in stream {
                 switch chunk {
                 case .stdout(let buffer), .stderr(let buffer):
