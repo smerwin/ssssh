@@ -249,6 +249,36 @@ simplifications you could "clean up," and most of them are load-bearing.
   that line (confirmed in its own source, `src/frontend/mosh-server.cc`),
   so this command reliably returns quickly whether or not anything ever
   connects to the server it just started.
+  - **Real bug, found connecting to a Mac with mosh installed via
+    Homebrew**: a non-interactive SSH exec request (what
+    `executeCommand`/`executeCommandStream` both send -- an SSH "exec"
+    channel request, not a real interactive session) runs the command via
+    the login shell's `-c` mode, *not* `-lc`. On macOS that means
+    `~/.zprofile` -- where Homebrew's installer puts its `brew shellenv`
+    PATH line -- is never sourced, so `mosh-server` at `/opt/homebrew/bin`
+    (Apple Silicon) or `/usr/local/bin` (Intel) is invisible even though
+    it's genuinely installed and on the user's own interactive PATH.
+    Confirmed directly (`env -i zsh -c 'echo $PATH'` omits
+    `/opt/homebrew/bin`; only `zsh -lc` includes it, and only because
+    `.zprofile` sources `brew shellenv`). Fixed by prepending well-known
+    install locations to `PATH` in the command itself
+    (`MoshBootstrap.pathPrefix`) rather than depending on shell
+    login/interactive nuances that vary by the remote user's own dotfiles.
+  - **A second, related bug the same investigation surfaced**: a
+    maximally bare non-interactive shell environment can also leave
+    `LANG`/`LC_ALL` completely unset, which makes `mosh-server` itself
+    refuse to start ("needs a UTF-8 native locale to run") even once it's
+    found. Real mosh's own client solves this by forwarding the *client's*
+    actual locale via repeated `-l NAME=VALUE` flags on `mosh-server new`;
+    this app has no equivalent client-side locale concept, so
+    `MoshBootstrap.detect` tries the plain command first and only retries
+    once with a hardcoded `-l LANG=en_US.UTF-8 -l LC_ALL=en_US.UTF-8` if
+    the specific locale failure message comes back (`Citadel.SSHClient
+    .CommandFailed` only carries an exit code, not the command's output,
+    so this required switching from `executeCommand` to the lower-level
+    `executeCommandStream` to actually inspect *why* it failed) --
+    deliberately not unconditional, so a host with its own working,
+    possibly non-English locale is never needlessly overridden.
 - `MoshOCB` implements AES-128 in OCB mode (RFC 7253) from the RFC's own
   pseudocode, built on CommonCrypto's raw AES-128 ECB single-block
   encrypt/decrypt as the "ENCIPHER"/"DECIPHER" primitive. **This exists

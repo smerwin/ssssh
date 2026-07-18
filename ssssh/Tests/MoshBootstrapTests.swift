@@ -69,6 +69,39 @@ struct MoshBootstrapTests {
         }
     }
 
+    @Test("Recognizes mosh-server's real UTF-8 locale failure message")
+    func recognizesRealLocaleFailureMessage() {
+        // Captured verbatim by running `mosh-server new -s` in a
+        // deliberately bare (`env -i`) shell environment on macOS -- the
+        // exact environment a non-interactive, non-login SSH exec request
+        // can produce (see MoshBootstrap.pathPrefix's doc comment).
+        let output = """
+        Warning: SSH_CONNECTION not found; binding to any interface.
+        mosh-server needs a UTF-8 native locale to run.
+
+        Unfortunately, the local environment ([no charset variables]) specifies
+        the character set "US-ASCII",
+
+        The client-supplied environment ([no charset variables]) specifies
+        the character set "US-ASCII".
+
+        LANG=""
+        LC_COLLATE="C"
+        LC_CTYPE="C"
+        LC_MESSAGES="C"
+        LC_MONETARY="C"
+        LC_NUMERIC="C"
+        LC_TIME="C"
+        LC_ALL=
+        """
+        #expect(MoshBootstrap.needsUTF8LocaleFallback(output))
+    }
+
+    @Test("Does not mistake an unrelated failure for the locale one")
+    func doesNotMistakeCommandNotFoundForLocaleFailure() {
+        #expect(!MoshBootstrap.needsUTF8LocaleFallback("zsh:1: command not found: mosh-server\n"))
+    }
+
     @Test("Parses real output captured from mosh-server 1.4.0 over SSH")
     func parsesRealCapturedOutput() throws {
         // Captured verbatim from `ssh testuser@host "mosh-server new -s"`
