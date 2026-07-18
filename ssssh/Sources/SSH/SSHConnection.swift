@@ -482,12 +482,21 @@ final class SSHConnection: Identifiable, Hashable, @unchecked Sendable {
             // trip to bootstrap mosh-server, then a UDP round trip to
             // confirm it) used to run to completion *before* a PTY was even
             // requested, so a host where it eventually failed or fell back
-            // still paid for that whole sequence serially first. Now a PTY
-            // channel is opened on `client` at the same time as the Mosh
-            // attempt runs, and whichever actually confirms first is the one
-            // that goes live -- the other is discarded, having never been
-            // shown to the user or sent a keystroke, so there's nothing to
-            // reconcile between them.
+            // still paid for that whole sequence serially first. A PTY
+            // channel now opens on `client` at the same time as the Mosh
+            // attempt runs -- but that alone isn't a real race unless SSH is
+            // actually *allowed* to go first when it's ready first: an
+            // earlier version of this still unconditionally waited for
+            // Mosh's decision before ever showing SSH's already-ready
+            // output, so a host where Mosh eventually failed still made
+            // every connection pay for the full attempt (up to
+            // `moshConfirmationTimeout`) even though plain SSH was ready
+            // almost immediately. Now it's a genuine race by arrival time,
+            // implemented below: whichever of "SSH's first real byte of
+            // output" or "Mosh's decision" happens first is what's reacted
+            // to first. If SSH wins, it goes live immediately; if Mosh then
+            // confirms shortly after, the session upgrades to Mosh
+            // mid-stream instead of never having had the chance to.
             let handoff = HandoffOutcome()
             let moshTask = Task<Void, Never> {
                 guard UserDefaults.standard.autoUpgradeToMoshEnabled else { return }
@@ -508,11 +517,10 @@ final class SSHConnection: Identifiable, Hashable, @unchecked Sendable {
             do {
                 try await client.withPTY(ptyRequest) { inbound, outbound in
                     // Reads `inbound` on its own, independent task rather
-                    // than inline in this loop -- the handoff decision below
-                    // needs to be able to act the instant Mosh's outcome is
-                    // known even if this shell has gone quiet waiting for a
-                    // keystroke nobody's sent yet (nothing types into either
-                    // side until the race is decided), so it can never be
+                    // than inline in the race loop below -- the race needs
+                    // to be able to react to Mosh's decision the instant
+                    // it's known even if this shell has gone quiet waiting
+                    // for a keystroke nobody's sent yet, so it can never be
                     // what the decision itself is blocked on. `AsyncStream`
                     // decouples the two: this task only ever appends to it.
                     let (stream, continuation) = AsyncStream<[UInt8]>.makeStream()
@@ -531,30 +539,79 @@ final class SSHConnection: Identifiable, Hashable, @unchecked Sendable {
                         continuation.finish()
                     }
 
-                    await moshTask.value
-                    guard !handoff.moshWon else {
-                        // Mosh won and already closed `client` -- that's
-                        // what ends `readerTask`'s loop above; whatever it
-                        // saw there is an expected side effect of that
-                        // close, not a real failure, so it's discarded
-                        // rather than inspected.
-                        _ = await readerTask.value
-                        return
+                    // Merges "the next byte of real SSH output arrived" and
+                    // "Mosh's bootstrap+confirm attempt has decided" into a
+                    // single ordered stream of events, so whichever
+                    // genuinely happens first is what the loop below reacts
+                    // to first -- a true race by arrival time, not "always
+                    // wait for Mosh, then check what it decided."
+                    enum RaceEvent { case chunk([UInt8]), moshDecision(Bool) }
+                    let (events, eventsContinuation) = AsyncStream<RaceEvent>.makeStream()
+                    let chunkForwarder = Task {
+                        for await chunk in stream {
+                            eventsContinuation.yield(.chunk(chunk))
+                        }
+                        eventsContinuation.finish()
+                    }
+                    let moshForwarder = Task {
+                        await moshTask.value
+                        eventsContinuation.yield(.moshDecision(handoff.moshWon))
                     }
 
-                    // SSH won: become the live data path. Nothing above was
-                    // ever shown or interactive, so there's no lost or
-                    // duplicated input to reconcile -- same as the PTY open
-                    // this replaces, just no longer serialized after Mosh.
-                    network.writer = outbound
-                    if let startupCommand = host.startupCommand, !startupCommand.isEmpty {
-                        try? await outbound.write(ByteBuffer(string: startupCommand + "\n"))
+                    var hasCommittedToSSH = false
+                    func commitToSSH() async {
+                        guard !hasCommittedToSSH else { return }
+                        hasCommittedToSSH = true
+                        network.writer = outbound
+                        if let startupCommand = host.startupCommand, !startupCommand.isEmpty {
+                            try? await outbound.write(ByteBuffer(string: startupCommand + "\n"))
+                        }
+                        await MainActor.run { self.state = .connected }
                     }
-                    await MainActor.run { self.state = .connected }
 
-                    for await chunk in stream {
-                        await MainActor.run { self.onOutput?(chunk) }
+                    for await event in events {
+                        switch event {
+                        case .moshDecision(let won):
+                            guard won else {
+                                // Mosh lost. If SSH's own output hadn't
+                                // arrived yet, it's free to become the live
+                                // path right now instead of waiting any
+                                // further for a Mosh attempt that's already
+                                // over.
+                                await commitToSSH()
+                                continue
+                            }
+                            // Mosh won -- possibly *after* SSH had already
+                            // become the live, interactive path. That's what
+                            // makes this a real race: SSH was free to go the
+                            // instant it was ready, without waiting to see
+                            // whether Mosh would eventually beat it. If SSH
+                            // had already committed, say so -- same
+                            // reasoning as the reconnect banner above: a
+                            // brand new shell appearing with no explanation
+                            // would look like a hang or a bug, not an
+                            // upgrade.
+                            if hasCommittedToSSH {
+                                await MainActor.run {
+                                    self.onOutput?(Array("\r\n[ssssh] Mosh is now available -- upgrading this session…\r\n".utf8))
+                                }
+                            }
+                            // Mosh's own `attemptMoshUpgrade` already wired
+                            // its transport and closed `client` -- that's
+                            // what ends `readerTask`'s loop; whatever it saw
+                            // there is an expected side effect of that
+                            // close, not a real failure, so it's discarded
+                            // rather than inspected.
+                            chunkForwarder.cancel()
+                            _ = await readerTask.value
+                            return
+                        case .chunk(let bytes):
+                            await commitToSSH()
+                            await MainActor.run { self.onOutput?(bytes) }
+                        }
                     }
+
+                    _ = await moshForwarder.value
                     _ = await readerTask.value
                     if let error = readerFailure.error {
                         throw error
