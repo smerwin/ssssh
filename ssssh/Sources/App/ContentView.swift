@@ -30,8 +30,15 @@ struct ContentView: View {
         }
         .tint(theme.accentColor)
         .onChange(of: scenePhase) { _, newPhase in
-            if newPhase == .active {
-                sessionManager.reconnectIfNeeded()
+            switch newPhase {
+            case .active:
+                sessionManager.applicationWillEnterForeground()
+            case .background:
+                sessionManager.applicationDidEnterBackground()
+            case .inactive:
+                break
+            @unknown default:
+                break
             }
         }
     }

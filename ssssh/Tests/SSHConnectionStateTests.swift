@@ -13,4 +13,18 @@ struct SSHConnectionStateTests {
         #expect(SSHConnection.State.failed("some error").isDisconnectedOrFailed == true)
         #expect(SSHConnection.State.waitingToReconnect(at: .now).isDisconnectedOrFailed == true)
     }
+
+    @MainActor
+    @Test func sendKeepaliveIsANoOpWithoutALiveConnection() {
+        // `SessionManager`'s background keepalive timer calls this
+        // unconditionally on every connected session; it must be safe to
+        // call before a connection ever reaches `.connected` (no writer
+        // to send through yet) without crashing or changing state.
+        let host = SSHHost(nickname: "test", hostname: "example.com", username: "me")
+        let connection = SSHConnection(host: host)
+
+        connection.sendKeepalive()
+
+        #expect(connection.state == .connecting)
+    }
 }
