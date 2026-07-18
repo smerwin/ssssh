@@ -695,9 +695,10 @@ private extension UserDefaults {
     }
 
     /// Defaults to `false`: unlike Auto-Reconnect and Verbose Connecting,
-    /// this opts into extra work on every connect (an SSH exec round trip)
-    /// for a feature that, so far, only detects and reports Mosh
-    /// availability -- it doesn't yet do anything with it.
+    /// this opts into extra work on every connect (bootstrapping
+    /// `mosh-server` and racing a real Mosh UDP session against the plain
+    /// SSH PTY -- see `attemptMoshUpgrade`), so it stays opt-in rather than
+    /// on by default.
     var autoUpgradeToMoshEnabled: Bool {
         bool(forKey: AppSettingsKeys.autoUpgradeToMosh)
     }
