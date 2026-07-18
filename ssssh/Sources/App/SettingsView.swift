@@ -5,6 +5,7 @@ struct SettingsView: View {
     @AppStorage(AppSettingsKeys.terminalTheme) private var themeRawValue = TerminalTheme.crtGreen.rawValue
     @AppStorage(AppSettingsKeys.autoReconnect) private var autoReconnect = true
     @AppStorage(AppSettingsKeys.verboseConnecting) private var verboseConnecting = true
+    @AppStorage(AppSettingsKeys.autoUpgradeToMosh) private var autoUpgradeToMosh = false
 
     @State private var isPresentingPaywall = false
 
@@ -45,6 +46,11 @@ struct SettingsView: View {
                     Toggle("Verbose Connecting", isOn: $verboseConnecting)
                 } footer: {
                     Text("Show ssh -v-style connection details (connecting, authenticating, requesting a pty) in the terminal while a session connects.")
+                }
+                Section {
+                    Toggle("Auto-Upgrade to Mosh", isOn: $autoUpgradeToMosh)
+                } footer: {
+                    Text("When connecting, check whether the remote host has mosh-server installed. Detection is reported in the terminal when Verbose Connecting is also on. Sessions do not yet actually run over Mosh -- this only detects and reports availability so far.")
                 }
             }
             .navigationTitle("Settings")
