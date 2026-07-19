@@ -175,20 +175,47 @@ final class MoshTransport: @unchecked Sendable {
     /// mosh's own unbounded-until-throwaway_num retention.
     private var recentBaselines: [UInt64] = []
     private static let maxRetainedBaselines = 16
-    /// What's already been fed to `onOutput` for each retained baseline,
-    /// keyed by that instruction's `old_num`. A real mosh-server's tick
-    /// loop can resend "the current diff" under a fresh `new_num` even
-    /// when nothing new has happened, producing a sibling whose content is
-    /// byte-for-byte identical to (or a simple extension of) one already
-    /// applied from the same baseline -- verified against a real
-    /// mosh-server, where a second, redundant tick reproduced the exact
-    /// same 126 bytes of shell output already fed from an earlier sibling,
-    /// and re-feeding it duplicated the rendered command/output. Applying
-    /// an instruction now only ever feeds the suffix beyond what's already
-    /// recorded here for its `old_num`, so an identical resend feeds
-    /// nothing further and a genuinely longer sibling only feeds its new
-    /// tail. Pruned in lockstep with `recentBaselines`.
-    private var contentFedForBaseline: [UInt64: [UInt8]] = [:]
+    /// The cumulative length (in bytes) of host output actually fed to
+    /// `onOutput` as of reaching a given, still-retained state number --
+    /// keyed the same way `recentBaselines` retains reference points, and
+    /// pruned in lockstep with it. Together with `furthestRenderedLength`,
+    /// this is what makes a resend anchored on an *older* baseline
+    /// recognize when the content it carries overlaps with content
+    /// already delivered via a *different*, more recently reached
+    /// baseline -- something a purely per-baseline check can't catch (see
+    /// that property's own doc comment for the scenario this closes).
+    /// Seeded with `[0: 0]` -- state 0 is `myAckedStateNum`'s own starting
+    /// value, reached before any instruction has ever been processed, so
+    /// it never goes through the "record this state's cumulative length"
+    /// step every other entry gets.
+    private var cumulativeRenderedLength: [UInt64: Int] = [0: 0]
+    /// The furthest cumulative position (in bytes) rendered so far, from
+    /// *any* accepted instruction, regardless of which baseline it was
+    /// anchored on.
+    ///
+    /// A real mosh-server's tick loop can resend "the current diff" -- for
+    /// the *same* baseline, this is the already-covered "successive
+    /// sibling" case (verified against a real mosh-server: a second,
+    /// redundant tick reproduced the exact same 126 bytes of shell output
+    /// already fed from an earlier sibling). But since `HostBytes` is
+    /// literal terminal output bytes, not a structured screen diff (see
+    /// CLAUDE.md's "append-only insight"), a diff "since old_num" is really
+    /// just a suffix of the *same* overall append-only output stream --
+    /// which means a resend anchored on an *older*, still-retained baseline
+    /// (not a sibling of the one that made the most recent progress) can
+    /// validly carry content that overlaps with content already delivered
+    /// via that more recent, differently-anchored baseline. Tracking "what's
+    /// been fed for old_num X" alone (the original fix for the sibling
+    /// case) has no way to know that -- it only ever compares a message
+    /// against its own anchor's history, not against everything actually
+    /// rendered so far. Comparing by *length*, not content, is deliberate:
+    /// different baselines' diffs aren't byte-comparable strings in
+    /// general (their starting points differ), but the cumulative length
+    /// each one implies (`cumulativeRenderedLength[oldNum] + this
+    /// message's content length`) is consistent regardless of which
+    /// message establishes a given state number's position, since it's a
+    /// property of the state numbers themselves, not of any one message.
+    private var furthestRenderedLength = 0
     private var highestReceivedSequence: UInt64?
 
     private var heartbeatTimer: DispatchSourceTimer?
@@ -426,7 +453,10 @@ final class MoshTransport: @unchecked Sendable {
         }
     }
 
-    private func handleIncoming(_ datagram: [UInt8]) {
+    /// Not `private` so it's directly testable with hand-crafted, encrypted
+    /// datagrams instead of needing a real `NWConnection` and a real
+    /// (nondeterministic) server to reproduce a specific packet ordering.
+    func handleIncoming(_ datagram: [UInt8]) {
         let message: MoshSession.Message
         do {
             message = try session.decrypt(datagram)
@@ -489,28 +519,25 @@ final class MoshTransport: @unchecked Sendable {
             }
         }
 
-        // Only feed the part of this baseline's content we haven't already
-        // fed -- see `contentFedForBaseline`'s doc comment for why a
-        // sibling from the same `old_num` can carry content that's
-        // identical to (or a simple extension of) one already applied.
-        let alreadyFed = contentFedForBaseline[instruction.oldNum] ?? []
-        let outputBytes: [UInt8]
-        if fullContent.count >= alreadyFed.count, Array(fullContent.prefix(alreadyFed.count)) == alreadyFed {
-            outputBytes = Array(fullContent.dropFirst(alreadyFed.count))
-        } else {
-            // Diverges from what was already fed for this baseline --
-            // shouldn't normally happen, but feed everything rather than
-            // silently lose data.
-            outputBytes = fullContent
-        }
-        contentFedForBaseline[instruction.oldNum] = fullContent
+        // Only feed the part of this message's content that hasn't already
+        // been rendered via *any* accepted instruction so far, not just
+        // ones anchored on this same `old_num` -- see
+        // `furthestRenderedLength`'s doc comment for why the latter alone
+        // isn't enough to catch every way a real mosh-server's resends can
+        // overlap with content already shown.
+        let baseCumulative = cumulativeRenderedLength[instruction.oldNum] ?? furthestRenderedLength
+        let messageCoversUpTo = baseCumulative + fullContent.count
+        let alreadyRenderedWithinThisMessage = max(0, min(furthestRenderedLength - baseCumulative, fullContent.count))
+        let outputBytes = Array(fullContent.dropFirst(alreadyRenderedWithinThisMessage))
+        cumulativeRenderedLength[instruction.newNum] = messageCoversUpTo
+        furthestRenderedLength = max(furthestRenderedLength, messageCoversUpTo)
 
         recentBaselines.append(myAckedStateNum)
         if recentBaselines.count > Self.maxRetainedBaselines {
             let dropped = recentBaselines.prefix(recentBaselines.count - Self.maxRetainedBaselines)
             recentBaselines.removeFirst(recentBaselines.count - Self.maxRetainedBaselines)
             for baseline in dropped {
-                contentFedForBaseline[baseline] = nil
+                cumulativeRenderedLength[baseline] = nil
             }
         }
 
