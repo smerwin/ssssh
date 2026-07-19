@@ -14,8 +14,21 @@ import UIKit
 /// hardware-key handling uses, so it stays correct whether or not the remote app has
 /// requested the kitty keyboard protocol (Claude Code's CLI does, to disambiguate
 /// Shift+Tab from a plain Tab).
+///
+/// Wrapping the stock accessory like this instead of assigning it directly as
+/// `TerminalView.inputAccessoryView` has one consequence worth calling out:
+/// `TerminalView` looks up the active Ctrl state by casting whatever's assigned to
+/// `inputAccessoryView` back to `TerminalAccessory` (`terminalAccessory` in
+/// `iOSTerminalView.swift`), and that cast always fails here since this wrapper *is* what's
+/// assigned, not `builtIn` itself. Left alone, tapping the on-screen Ctrl key would toggle
+/// `builtIn.controlModifier` (and its own highlight) with nothing ever reading it, so a
+/// following keystroke from the iOS keyboard sends the plain character instead of the
+/// control byte. The passthrough tap recognizer and notification observer below exist
+/// solely to bridge that gap by mirroring state into `TerminalView.controlModifier`
+/// directly, which is the exact fallback that same lookup already reads.
 final class TerminalAccessoryView: UIInputView {
     private weak var terminalView: SwiftTerm.TerminalView?
+    private weak var builtIn: TerminalAccessory?
 
     init(terminalView: SwiftTerm.TerminalView) {
         let isPhone = UIDevice.current.userInterfaceIdiom == .phone
@@ -30,6 +43,19 @@ final class TerminalAccessoryView: UIInputView {
                                         inputViewStyle: .keyboard, container: terminalView)
         builtIn.translatesAutoresizingMaskIntoConstraints = false
         addSubview(builtIn)
+        self.builtIn = builtIn
+
+        // Passthrough observer: doesn't cancel touches, so builtIn's own buttons (including
+        // its Ctrl toggle, which flips `controlModifier` on `.touchDown`) still receive every
+        // touch normally. By the time a tap *recognizes* on touch-up, that toggle has already
+        // happened, so this just copies the result into `TerminalView.controlModifier`.
+        let controlSyncRecognizer = UITapGestureRecognizer(target: self, action: #selector(syncControlModifier))
+        controlSyncRecognizer.cancelsTouchesInView = false
+        controlSyncRecognizer.delaysTouchesBegan = false
+        addGestureRecognizer(controlSyncRecognizer)
+
+        NotificationCenter.default.addObserver(self, selector: #selector(controlModifierWasReset),
+                                               name: .terminalViewControlModifierReset, object: terminalView)
 
         let shiftTabButton = UIButton(type: .system)
         shiftTabButton.setTitle("⇧⇥", for: .normal)
@@ -54,6 +80,15 @@ final class TerminalAccessoryView: UIInputView {
 
     required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
+    }
+
+    @objc private func syncControlModifier() {
+        guard let builtIn, let terminalView else { return }
+        terminalView.controlModifier = builtIn.controlModifier
+    }
+
+    @objc private func controlModifierWasReset() {
+        builtIn?.controlModifier = false
     }
 
     @objc private func sendShiftTab() {
