@@ -124,11 +124,3 @@ final class SessionManager {
         return connection
     }
 }
-
-private extension UserDefaults {
-    /// Defaults to `true` (matching the pre-toggle behavior of always
-    /// reconnecting) when the user has never touched the setting.
-    var autoReconnectEnabled: Bool {
-        object(forKey: AppSettingsKeys.autoReconnect) == nil || bool(forKey: AppSettingsKeys.autoReconnect)
-    }
-}

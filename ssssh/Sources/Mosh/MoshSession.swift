@@ -51,10 +51,10 @@ final class MoshSession {
 
     func encrypt(direction: Direction, sequence: UInt64, timestamp: UInt16, timestampReply: UInt16, payload: [UInt8]) -> [UInt8] {
         let seqDirection = (direction.bit << 63) | (sequence & Self.sequenceMask)
-        let wireNonce = Self.bigEndianBytes64(seqDirection)
+        let wireNonce = MoshBigEndian.bytes64(seqDirection)
 
-        var plaintext = Self.bigEndianBytes16(timestamp)
-        plaintext.append(contentsOf: Self.bigEndianBytes16(timestampReply))
+        var plaintext = MoshBigEndian.bytes16(timestamp)
+        plaintext.append(contentsOf: MoshBigEndian.bytes16(timestampReply))
         plaintext.append(contentsOf: payload)
 
         let ocbNonce: [UInt8] = [0, 0, 0, 0] + wireNonce
@@ -67,7 +67,7 @@ final class MoshSession {
         let wireNonce = Array(datagram.prefix(8))
         let body = Array(datagram.dropFirst(8))
 
-        let seqDirection = Self.bigEndianValue64(wireNonce)
+        let seqDirection = MoshBigEndian.value64(wireNonce)
         let direction: Direction = (seqDirection & Self.directionMask) != 0 ? .toClient : .toServer
         let sequence = seqDirection & Self.sequenceMask
 
@@ -75,25 +75,9 @@ final class MoshSession {
         let plaintext = try MoshOCB.decrypt(key: key, nonce: ocbNonce, ciphertext: body)
         guard plaintext.count >= 4 else { throw MoshOCB.AuthenticationFailure() }
 
-        let timestamp = Self.bigEndianValue16(Array(plaintext.prefix(2)))
-        let timestampReply = Self.bigEndianValue16(Array(plaintext[2..<4]))
+        let timestamp = MoshBigEndian.value16(Array(plaintext.prefix(2)))
+        let timestampReply = MoshBigEndian.value16(Array(plaintext[2..<4]))
         let payload = Array(plaintext.dropFirst(4))
         return Message(direction: direction, sequence: sequence, timestamp: timestamp, timestampReply: timestampReply, payload: payload)
-    }
-
-    private static func bigEndianBytes64(_ value: UInt64) -> [UInt8] {
-        (0..<8).map { UInt8(truncatingIfNeeded: value >> (56 - $0 * 8)) }
-    }
-
-    private static func bigEndianValue64(_ bytes: [UInt8]) -> UInt64 {
-        bytes.reduce(UInt64(0)) { ($0 << 8) | UInt64($1) }
-    }
-
-    private static func bigEndianBytes16(_ value: UInt16) -> [UInt8] {
-        [UInt8(value >> 8), UInt8(value & 0xFF)]
-    }
-
-    private static func bigEndianValue16(_ bytes: [UInt8]) -> UInt16 {
-        (UInt16(bytes[0]) << 8) | UInt16(bytes[1])
     }
 }

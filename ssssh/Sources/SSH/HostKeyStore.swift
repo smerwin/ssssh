@@ -39,10 +39,10 @@ final class HostKeyStore: @unchecked Sendable {
     private(set) var trustedFingerprints: [UUID: String] = [:]
     var pendingConfirmation: PendingHostKeyConfirmation?
 
-    private let storageURL: URL
+    private let fileStore: JSONFileStore<[String: String]>
 
-    init(storageURL: URL = HostKeyStore.defaultStorageURL()) {
-        self.storageURL = storageURL
+    init(storageURL: URL = applicationSupportURL(filename: "known_hosts.json")) {
+        fileStore = JSONFileStore(url: storageURL)
         load()
     }
 
@@ -100,8 +100,7 @@ final class HostKeyStore: @unchecked Sendable {
     }
 
     private func load() {
-        guard let data = try? Data(contentsOf: storageURL) else { return }
-        let decoded = (try? JSONDecoder().decode([String: String].self, from: data)) ?? [:]
+        let decoded = fileStore.load(default: [:])
         trustedFingerprints = Dictionary(uniqueKeysWithValues: decoded.compactMap { key, value in
             UUID(uuidString: key).map { ($0, value) }
         })
@@ -109,13 +108,6 @@ final class HostKeyStore: @unchecked Sendable {
 
     private func save() throws {
         let encodable = Dictionary(uniqueKeysWithValues: trustedFingerprints.map { ($0.key.uuidString, $0.value) })
-        let data = try JSONEncoder().encode(encodable)
-        try data.write(to: storageURL, options: .atomic)
-    }
-
-    private nonisolated static func defaultStorageURL() -> URL {
-        let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        return dir.appendingPathComponent("known_hosts.json")
+        try fileStore.save(encodable)
     }
 }

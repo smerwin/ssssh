@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import SwiftUI
 import NIO
 import NIOSSH
 import Citadel
@@ -112,6 +113,31 @@ final class SSHConnection: Identifiable, Hashable, @unchecked Sendable {
             case .connecting, .connected: return false
             }
         }
+
+        /// Short human-readable status text shared by the sessions list row
+        /// and the terminal status banner. Doesn't cover
+        /// `.waitingToReconnect`'s live countdown -- both call sites render
+        /// that case with `Text(_:style:.timer)` instead of a plain string.
+        var shortStatusText: String {
+            switch self {
+            case .connecting: return "Connecting…"
+            case .connected: return "Connected"
+            case .disconnected: return "Disconnected"
+            case .failed(let message): return message
+            case .waitingToReconnect: return "Reconnecting…"
+            }
+        }
+
+        /// Status-dot color for the sessions list row: green when
+        /// connected, yellow while connecting or waiting to retry, red
+        /// once stopped.
+        var dotColor: SwiftUI.Color {
+            switch self {
+            case .connected: return .green
+            case .connecting, .waitingToReconnect: return .yellow
+            case .disconnected, .failed: return .red
+            }
+        }
     }
 
     let id = UUID()
@@ -193,6 +219,13 @@ final class SSHConnection: Identifiable, Hashable, @unchecked Sendable {
     /// wait before falling back. Still a guess, not tuned against a real
     /// high-latency link -- see CLAUDE.md's Mosh section, "Still open".
     nonisolated private static let moshConfirmationTimeout: TimeInterval = 2
+
+    /// PTY size requested on connect, before the terminal view reports its
+    /// own real size via `resize(cols:rows:)`. Also `lastKnownSize`'s
+    /// initial value, so a resize that never arrives (e.g. a session that
+    /// drops before the terminal view attaches) still matches what the
+    /// remote shell was actually told.
+    nonisolated static let defaultTerminalSize: (cols: Int, rows: Int) = (80, 24)
 
     init(host: SSHHost) {
         self.host = host
@@ -291,140 +324,6 @@ final class SSHConnection: Identifiable, Hashable, @unchecked Sendable {
         network: SSHNetworkState,
         isReconnect: Bool
     ) async {
-        // Clears the (now-dead) client/writer so a later `connect()` --
-        // whether from auto-reconnect or the user retrying -- isn't
-        // blocked by `connect()`'s `network.client == nil` guard.
-        func clearNetworkState() {
-            network.client = nil
-            network.writer = nil
-            network.moshTransport?.stop()
-            network.moshTransport = nil
-        }
-
-        // For a clean, expected end: the remote shell exited on its own
-        // (e.g. the user typed `exit`/`logout`, or Ctrl+D). Auto-reconnect
-        // must NOT fire here -- reconnecting right back into a fresh shell
-        // the instant the user deliberately logged out would be exactly
-        // the wrong behavior. Treated the same as a user-initiated
-        // disconnect: publish `.disconnected`, nothing more.
-        func finishCleanly() async {
-            clearNetworkState()
-            await MainActor.run {
-                self.connectTask = nil
-                self.state = .disconnected
-            }
-        }
-
-        // For a genuine unexpected drop or failure (network blip, auth
-        // failure, host key rejected, nonzero shell exit code, etc.):
-        // publishes state and fires `onDrop` so SessionManager can
-        // reconnect-or-kill per the auto-reconnect setting, unless this
-        // was itself the result of an explicit `disconnect()` call.
-        func finishWithDrop(_ newState: State) async {
-            clearNetworkState()
-            await MainActor.run {
-                // Clear this *before* firing `onDrop` -- `connect()`'s
-                // re-entrancy guard checks it, and a session that just
-                // ended (even if a reconnect is about to be scheduled)
-                // must look like one that's free to reconnect.
-                self.connectTask = nil
-                self.state = newState
-                if !self.userInitiatedClose {
-                    self.onDrop?()
-                }
-            }
-        }
-
-        // Citadel/NIOSSH don't log the handshake internals at all (no key
-        // exchange, algorithm negotiation, or auth-attempt logging exists
-        // to tap into), so this can't show real protocol-level detail the
-        // way `ssh -v` does. Instead it narrates the lifecycle steps we do
-        // control, in the same "debug1:"-prefixed style, fed through
-        // `onOutput` so it appears as regular terminal scrollback -- on by
-        // default (Settings > Verbose Connecting), matching how `ssh -v`
-        // always writes to the same terminal rather than a separate log
-        // view.
-        func emitDiagnostic(_ line: String) async {
-            guard UserDefaults.standard.verboseConnectingEnabled else { return }
-            await MainActor.run { self.onOutput?(Array((line + "\r\n").utf8)) }
-        }
-
-        // Bootstraps `mosh-server` over `client`, opens a `MoshTransport` to
-        // it, and waits up to `moshConfirmationTimeout` for proof of real
-        // UDP connectivity (mosh-server never sends first, so silence
-        // within the timeout typically means a firewall is blocking UDP
-        // outright) before committing. Runs concurrently with a speculative
-        // PTY channel opened on the same `client` -- see `runSession`'s doc
-        // comment on the handoff race -- rather than gating that PTY open
-        // on this function's outcome the way it used to.
-        // Returns `true` once the switch has happened -- `client` has been
-        // closed and `network.moshTransport` is now the live data path, so
-        // the caller must skip opening a PTY over SSH. Returns `false` for
-        // every other outcome (Mosh unavailable, bootstrap failed, UDP
-        // unreachable), in which case `client` is still open and untouched
-        // for the caller to proceed with the normal SSH PTY path.
-        func attemptMoshUpgrade(client: Citadel.SSHClient, handoff: HandoffOutcome) async -> Bool {
-            let bootstrap: MoshBootstrap.Result
-            do {
-                bootstrap = try await MoshBootstrap.detect(client: client)
-            } catch {
-                await emitDiagnostic("debug1: Mosh not available (\(error.localizedDescription)).")
-                return false
-            }
-            await emitDiagnostic("debug1: mosh-server available on port \(bootstrap.port); attempting Mosh upgrade.")
-
-            let transport = MoshTransport(host: host.hostname, port: bootstrap.port, sessionKey: bootstrap.sessionKey)
-
-            let established = await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
-                let resumer = SingleResume(continuation)
-                transport.onEstablished = { resumer.resume(true) }
-                transport.onError = { error in
-                    Task { await emitDiagnostic("debug1: Mosh UDP error (\(error.localizedDescription)) before upgrade completed.") }
-                    resumer.resume(false)
-                }
-                transport.start()
-                DispatchQueue.global().asyncAfter(deadline: .now() + Self.moshConfirmationTimeout) {
-                    resumer.resume(false)
-                }
-            }
-
-            guard established else {
-                await emitDiagnostic("debug1: Mosh UDP path did not respond within \(Int(Self.moshConfirmationTimeout))s (likely blocked by a firewall); continuing over SSH.")
-                transport.stop()
-                return false
-            }
-
-            await emitDiagnostic("debug1: Mosh UDP path confirmed; closing SSH connection and switching this session to Mosh.")
-            await MainActor.run { self.state = .connected }
-
-            transport.onOutput = { [weak self] bytes in
-                guard let self else { return }
-                Task { await MainActor.run { self.onOutput?(bytes) } }
-            }
-            transport.onError = { [weak self] error in
-                guard let self else { return }
-                Task {
-                    let message = Self.describe(error)
-                    await emitDiagnostic("debug1: Mosh session error: \(message).")
-                    await finishWithDrop(.failed(message))
-                }
-            }
-
-            // Set before `client.close()` below, not after `attemptMoshUpgrade`
-            // returns -- that close is what makes the concurrently-open
-            // speculative PTY channel fail, and this flag is how the code
-            // reacting to that failure tells it apart from a real drop. If
-            // this were set by the caller after awaiting this function's
-            // return value instead, there'd be a real window where that
-            // failure could be observed with the flag still `false`.
-            handoff.moshWon = true
-
-            network.moshTransport = transport
-            network.client = nil
-            try? await client.close()
-            return true
-        }
-
         // Unlike `emitDiagnostic`, this isn't gated by Verbose Connecting --
         // it's not `ssh -v`-style detail, it's the one thing that must
         // always be visible: new output is about to land in this session's
@@ -445,15 +344,13 @@ final class SSHConnection: Identifiable, Hashable, @unchecked Sendable {
         do {
             await emitDiagnostic("debug1: Connecting to \(host.hostname) port \(host.port).")
 
-            let auth = Self.makeAuthenticationMethod(username: host.username, material: material)
+            let auth = material.authenticationMethod(username: host.username)
             let validator = SSHHostKeyValidator.tofu(host: host, hostKeyStore: hostKeyStore)
 
             let client = try await Citadel.SSHClient.connect(
-                host: host.hostname,
-                port: host.port,
+                to: host,
                 authenticationMethod: auth,
-                hostKeyValidator: validator,
-                reconnect: .never
+                hostKeyValidator: validator
             )
             network.client = client
 
@@ -463,12 +360,12 @@ final class SSHConnection: Identifiable, Hashable, @unchecked Sendable {
             // and can only cancel this task. Check for that now, before
             // opening a PTY the user already asked to close.
             guard !Task.isCancelled else {
-                clearNetworkState()
+                clearNetworkState(network: network)
                 try? await client.close()
                 return
             }
 
-            await emitDiagnostic("debug1: Authentication succeeded (\(Self.algorithmDescription(for: material))) for user '\(host.username)'.")
+            await emitDiagnostic("debug1: Authentication succeeded (\(material.algorithmDescription)) for user '\(host.username)'.")
             await MainActor.run {
                 self.consecutiveFailureCount = 0
                 self.hasConnectedBefore = true
@@ -500,19 +397,19 @@ final class SSHConnection: Identifiable, Hashable, @unchecked Sendable {
             let handoff = HandoffOutcome()
             let moshTask = Task<Void, Never> {
                 guard UserDefaults.standard.autoUpgradeToMoshEnabled else { return }
-                _ = await attemptMoshUpgrade(client: client, handoff: handoff)
+                _ = await self.attemptMoshUpgrade(client: client, handoff: handoff, host: host, network: network)
             }
 
             let ptyRequest = SSHChannelRequestEvent.PseudoTerminalRequest(
                 wantReply: true,
                 term: "xterm-256color",
-                terminalCharacterWidth: 80,
-                terminalRowHeight: 24,
+                terminalCharacterWidth: Self.defaultTerminalSize.cols,
+                terminalRowHeight: Self.defaultTerminalSize.rows,
                 terminalPixelWidth: 0,
                 terminalPixelHeight: 0,
                 terminalModes: SSHTerminalModes([:])
             )
-            await emitDiagnostic("debug1: Requesting pty (xterm-256color, 80x24) alongside the Mosh attempt.")
+            await emitDiagnostic("debug1: Requesting pty (xterm-256color, \(Self.defaultTerminalSize.cols)x\(Self.defaultTerminalSize.rows)) alongside the Mosh attempt.")
 
             do {
                 try await client.withPTY(ptyRequest) { inbound, outbound in
@@ -618,7 +515,7 @@ final class SSHConnection: Identifiable, Hashable, @unchecked Sendable {
                     }
                 }
                 if !handoff.moshWon {
-                    await finishCleanly()
+                    await finishCleanly(network: network)
                 }
             } catch let error as NIO.ChannelError where error == .alreadyClosed {
                 // Citadel's withPTY tries to close the channel again on the
@@ -632,20 +529,159 @@ final class SSHConnection: Identifiable, Hashable, @unchecked Sendable {
                 // `client` out from under this still-open speculative
                 // channel -- `handoff.moshWon` tells the two apart.
                 if !handoff.moshWon {
-                    await finishCleanly()
+                    await finishCleanly(network: network)
                 }
             } catch {
                 if !handoff.moshWon {
                     let message = Self.describe(error)
                     await emitDiagnostic("debug1: \(message)")
-                    await finishWithDrop(.failed(message))
+                    await finishWithDrop(.failed(message), network: network)
                 }
             }
         } catch {
             let message = Self.describe(error)
             await emitDiagnostic("debug1: \(message)")
-            await finishWithDrop(.failed(message))
+            await finishWithDrop(.failed(message), network: network)
         }
+    }
+
+    // Clears the (now-dead) client/writer so a later `connect()` --
+    // whether from auto-reconnect or the user retrying -- isn't
+    // blocked by `connect()`'s `network.client == nil` guard.
+    nonisolated private func clearNetworkState(network: SSHNetworkState) {
+        network.client = nil
+        network.writer = nil
+        network.moshTransport?.stop()
+        network.moshTransport = nil
+    }
+
+    // For a clean, expected end: the remote shell exited on its own
+    // (e.g. the user typed `exit`/`logout`, or Ctrl+D). Auto-reconnect
+    // must NOT fire here -- reconnecting right back into a fresh shell
+    // the instant the user deliberately logged out would be exactly
+    // the wrong behavior. Treated the same as a user-initiated
+    // disconnect: publish `.disconnected`, nothing more.
+    nonisolated private func finishCleanly(network: SSHNetworkState) async {
+        clearNetworkState(network: network)
+        await MainActor.run {
+            self.connectTask = nil
+            self.state = .disconnected
+        }
+    }
+
+    // For a genuine unexpected drop or failure (network blip, auth
+    // failure, host key rejected, nonzero shell exit code, etc.):
+    // publishes state and fires `onDrop` so SessionManager can
+    // reconnect-or-kill per the auto-reconnect setting, unless this
+    // was itself the result of an explicit `disconnect()` call.
+    nonisolated private func finishWithDrop(_ newState: State, network: SSHNetworkState) async {
+        clearNetworkState(network: network)
+        await MainActor.run {
+            // Clear this *before* firing `onDrop` -- `connect()`'s
+            // re-entrancy guard checks it, and a session that just
+            // ended (even if a reconnect is about to be scheduled)
+            // must look like one that's free to reconnect.
+            self.connectTask = nil
+            self.state = newState
+            if !self.userInitiatedClose {
+                self.onDrop?()
+            }
+        }
+    }
+
+    // Citadel/NIOSSH don't log the handshake internals at all (no key
+    // exchange, algorithm negotiation, or auth-attempt logging exists
+    // to tap into), so this can't show real protocol-level detail the
+    // way `ssh -v` does. Instead it narrates the lifecycle steps we do
+    // control, in the same "debug1:"-prefixed style, fed through
+    // `onOutput` so it appears as regular terminal scrollback -- on by
+    // default (Settings > Verbose Connecting), matching how `ssh -v`
+    // always writes to the same terminal rather than a separate log
+    // view.
+    nonisolated private func emitDiagnostic(_ line: String) async {
+        guard UserDefaults.standard.verboseConnectingEnabled else { return }
+        await MainActor.run { self.onOutput?(Array((line + "\r\n").utf8)) }
+    }
+
+    // Bootstraps `mosh-server` over `client`, opens a `MoshTransport` to
+    // it, and waits up to `moshConfirmationTimeout` for proof of real
+    // UDP connectivity (mosh-server never sends first, so silence
+    // within the timeout typically means a firewall is blocking UDP
+    // outright) before committing. Runs concurrently with a speculative
+    // PTY channel opened on the same `client` -- see `runSession`'s doc
+    // comment on the handoff race -- rather than gating that PTY open
+    // on this function's outcome the way it used to.
+    // Returns `true` once the switch has happened -- `client` has been
+    // closed and `network.moshTransport` is now the live data path, so
+    // the caller must skip opening a PTY over SSH. Returns `false` for
+    // every other outcome (Mosh unavailable, bootstrap failed, UDP
+    // unreachable), in which case `client` is still open and untouched
+    // for the caller to proceed with the normal SSH PTY path.
+    nonisolated private func attemptMoshUpgrade(
+        client: Citadel.SSHClient,
+        handoff: HandoffOutcome,
+        host: SSHHost,
+        network: SSHNetworkState
+    ) async -> Bool {
+        let bootstrap: MoshBootstrap.Result
+        do {
+            bootstrap = try await MoshBootstrap.detect(client: client)
+        } catch {
+            await emitDiagnostic("debug1: Mosh not available (\(error.localizedDescription)).")
+            return false
+        }
+        await emitDiagnostic("debug1: mosh-server available on port \(bootstrap.port); attempting Mosh upgrade.")
+
+        let transport = MoshTransport(host: host.hostname, port: bootstrap.port, sessionKey: bootstrap.sessionKey)
+
+        let established = await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
+            let resumer = SingleResume(continuation)
+            transport.onEstablished = { resumer.resume(true) }
+            transport.onError = { error in
+                Task { await self.emitDiagnostic("debug1: Mosh UDP error (\(error.localizedDescription)) before upgrade completed.") }
+                resumer.resume(false)
+            }
+            transport.start()
+            DispatchQueue.global().asyncAfter(deadline: .now() + Self.moshConfirmationTimeout) {
+                resumer.resume(false)
+            }
+        }
+
+        guard established else {
+            await emitDiagnostic("debug1: Mosh UDP path did not respond within \(Int(Self.moshConfirmationTimeout))s (likely blocked by a firewall); continuing over SSH.")
+            transport.stop()
+            return false
+        }
+
+        await emitDiagnostic("debug1: Mosh UDP path confirmed; closing SSH connection and switching this session to Mosh.")
+        await MainActor.run { self.state = .connected }
+
+        transport.onOutput = { [weak self] bytes in
+            guard let self else { return }
+            Task { await MainActor.run { self.onOutput?(bytes) } }
+        }
+        transport.onError = { [weak self] error in
+            guard let self else { return }
+            Task {
+                let message = Self.describe(error)
+                await self.emitDiagnostic("debug1: Mosh session error: \(message).")
+                await self.finishWithDrop(.failed(message), network: network)
+            }
+        }
+
+        // Set before `client.close()` below, not after `attemptMoshUpgrade`
+        // returns -- that close is what makes the concurrently-open
+        // speculative PTY channel fail, and this flag is how the code
+        // reacting to that failure tells it apart from a real drop. If
+        // this were set by the caller after awaiting this function's
+        // return value instead, there'd be a real window where that
+        // failure could be observed with the flag still `false`.
+        handoff.moshWon = true
+
+        network.moshTransport = transport
+        network.client = nil
+        try? await client.close()
+        return true
     }
 
     func send(_ bytes: [UInt8]) {
@@ -662,7 +698,7 @@ final class SSHConnection: Identifiable, Hashable, @unchecked Sendable {
     /// the size requested at connect time (see `ptyRequest` in
     /// `runSession`). Used by `sendKeepalive()` to re-send a size the
     /// terminal view may never have actually changed.
-    private var lastKnownSize: (cols: Int, rows: Int) = (80, 24)
+    private var lastKnownSize: (cols: Int, rows: Int) = SSHConnection.defaultTerminalSize
 
     func resize(cols: Int, rows: Int) {
         guard cols > 0, rows > 0 else { return }
@@ -703,25 +739,6 @@ final class SSHConnection: Identifiable, Hashable, @unchecked Sendable {
         Task { try? await client?.close() }
     }
 
-    nonisolated private static func makeAuthenticationMethod(username: String, material: SSHPrivateKeyMaterial) -> SSHAuthenticationMethod {
-        switch material {
-        case .ed25519(let privateKey):
-            return .ed25519(username: username, privateKey: privateKey)
-        case .ecdsaP256(let privateKey):
-            return .p256(username: username, privateKey: privateKey)
-        case .ecdsaP384(let privateKey):
-            return .p384(username: username, privateKey: privateKey)
-        }
-    }
-
-    nonisolated private static func algorithmDescription(for material: SSHPrivateKeyMaterial) -> String {
-        switch material {
-        case .ed25519: return "publickey: ssh-ed25519"
-        case .ecdsaP256: return "publickey: ecdsa-sha2-nistp256"
-        case .ecdsaP384: return "publickey: ecdsa-sha2-nistp384"
-        }
-    }
-
     nonisolated private static func describe(_ error: Error) -> String {
         if error is HostKeyRejected {
             return "Host key was not trusted."
@@ -741,22 +758,5 @@ enum SSHConnectionError: LocalizedError {
         case .noKeyConfigured:
             return "This host has no key configured. Edit the host and choose a key."
         }
-    }
-}
-
-private extension UserDefaults {
-    /// Defaults to `true` (verbose by default, matching `ssh -v`-style
-    /// connecting output) when the user has never touched the setting.
-    var verboseConnectingEnabled: Bool {
-        object(forKey: AppSettingsKeys.verboseConnecting) == nil || bool(forKey: AppSettingsKeys.verboseConnecting)
-    }
-
-    /// Defaults to `false`: unlike Auto-Reconnect and Verbose Connecting,
-    /// this opts into extra work on every connect (bootstrapping
-    /// `mosh-server` and racing a real Mosh UDP session against the plain
-    /// SSH PTY -- see `attemptMoshUpgrade`), so it stays opt-in rather than
-    /// on by default.
-    var autoUpgradeToMoshEnabled: Bool {
-        bool(forKey: AppSettingsKeys.autoUpgradeToMosh)
     }
 }

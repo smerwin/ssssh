@@ -116,48 +116,19 @@ struct HostListView: View {
             .sheet(isPresented: $isPresentingPaywall) {
                 PaywallView()
             }
-            // .alert instead of .confirmationDialog: a confirmationDialog
-            // renders as a popover with a tail pointing at its (here,
-            // ambiguous) anchor on iPad, and only gets a Cancel button for
-            // free if no button you supply has role .cancel. .alert is a
-            // plain centered modal on every device -- no tail -- and needs
-            // an explicit Cancel button either way, which keeps that
-            // behavior obvious rather than incidental.
-            .alert(
-                "Delete Host",
-                isPresented: Binding(
-                    get: { hostPendingDeletion != nil },
-                    set: { if !$0 { hostPendingDeletion = nil } }
-                ),
-                presenting: hostPendingDeletion
-            ) { host in
-                Button("Cancel", role: .cancel) {
-                    hostPendingDeletion = nil
-                }
-                Button("Delete", role: .destructive) {
-                    try? hostStore.delete(host)
-                    hostPendingDeletion = nil
-                }
-            } message: { host in
+            .destructiveConfirmationAlert("Delete Host", item: $hostPendingDeletion) { host in
                 Text("\"\(host.nickname)\" will be removed from ssssh. You can add it again later.")
+            } onConfirm: { host in
+                try? hostStore.delete(host)
             }
-            .alert(
+            .destructiveConfirmationAlert(
                 "Forget Known Host Key",
-                isPresented: Binding(
-                    get: { hostPendingForgetKey != nil },
-                    set: { if !$0 { hostPendingForgetKey = nil } }
-                ),
-                presenting: hostPendingForgetKey
+                item: $hostPendingForgetKey,
+                confirmTitle: "Forget Known Host Key"
             ) { host in
-                Button("Cancel", role: .cancel) {
-                    hostPendingForgetKey = nil
-                }
-                Button("Forget Known Host Key", role: .destructive) {
-                    hostKeyStore.forget(hostID: host.id)
-                    hostPendingForgetKey = nil
-                }
-            } message: { host in
                 Text("The next connection to \"\(host.nickname)\" will trust whatever host key the server presents, with no warning if it has changed since you last connected. Only do this if you know the server was legitimately reinstalled or had its key rotated.")
+            } onConfirm: { host in
+                hostKeyStore.forget(hostID: host.id)
             }
         }
     }

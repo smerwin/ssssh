@@ -51,7 +51,7 @@ final class PurchaseManager {
         var unlocked = false
         for await result in Transaction.currentEntitlements {
             guard case .verified(let transaction) = result else { continue }
-            if transaction.productID == Self.lifetimeProductID || transaction.productID == Self.monthlyProductID {
+            if Self.isKnownProductID(transaction.productID) {
                 unlocked = true
             }
         }
@@ -87,8 +87,12 @@ final class PurchaseManager {
 
     private func handle(_ result: VerificationResult<Transaction>) async {
         guard case .verified(let transaction) = result else { return }
-        guard transaction.productID == Self.lifetimeProductID || transaction.productID == Self.monthlyProductID else { return }
+        guard Self.isKnownProductID(transaction.productID) else { return }
         await transaction.finish()
         await refreshEntitlements()
+    }
+
+    private static func isKnownProductID(_ productID: String) -> Bool {
+        productID == lifetimeProductID || productID == monthlyProductID
     }
 }
