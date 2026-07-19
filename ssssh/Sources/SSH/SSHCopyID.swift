@@ -25,11 +25,9 @@ enum SSHCopyID {
     ) async throws {
         let validator = SSHHostKeyValidator.tofu(host: host, hostKeyStore: hostKeyStore)
         let passwordClient = try await Citadel.SSHClient.connect(
-            host: host.hostname,
-            port: host.port,
+            to: host,
             authenticationMethod: .passwordBased(username: host.username, password: password),
-            hostKeyValidator: validator,
-            reconnect: .never
+            hostKeyValidator: validator
         )
 
         do {
@@ -47,22 +45,12 @@ enum SSHCopyID {
         try await passwordClient.close()
 
         // Confirm the key actually works before declaring success.
-        let auth: SSHAuthenticationMethod
-        switch material {
-        case .ed25519(let privateKey):
-            auth = .ed25519(username: host.username, privateKey: privateKey)
-        case .ecdsaP256(let privateKey):
-            auth = .p256(username: host.username, privateKey: privateKey)
-        case .ecdsaP384(let privateKey):
-            auth = .p384(username: host.username, privateKey: privateKey)
-        }
+        let auth = material.authenticationMethod(username: host.username)
 
         let confirmingClient = try await Citadel.SSHClient.connect(
-            host: host.hostname,
-            port: host.port,
+            to: host,
             authenticationMethod: auth,
-            hostKeyValidator: validator,
-            reconnect: .never
+            hostKeyValidator: validator
         )
         try await confirmingClient.close()
     }

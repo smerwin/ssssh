@@ -9,11 +9,11 @@ import Observation
 final class KeyStore {
     private(set) var keys: [SSHKey] = []
 
-    private let metadataURL: URL
+    private let fileStore: JSONFileStore<[SSHKey]>
 
-    init(metadataURL: URL = KeyStore.defaultMetadataURL()) {
-        self.metadataURL = metadataURL
-        load()
+    init(metadataURL: URL = applicationSupportURL(filename: "keys.json")) {
+        fileStore = JSONFileStore(url: metadataURL)
+        keys = fileStore.load(default: [])
     }
 
     func generateKey(label: String, algorithm: SSHKeyAlgorithm = .ed25519) throws -> SSHKey {
@@ -67,19 +67,7 @@ final class KeyStore {
         }
     }
 
-    private func load() {
-        guard let data = try? Data(contentsOf: metadataURL) else { return }
-        keys = (try? JSONDecoder().decode([SSHKey].self, from: data)) ?? []
-    }
-
     private func save() throws {
-        let data = try JSONEncoder().encode(keys)
-        try data.write(to: metadataURL, options: .atomic)
-    }
-
-    private static func defaultMetadataURL() -> URL {
-        let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        return dir.appendingPathComponent("keys.json")
+        try fileStore.save(keys)
     }
 }

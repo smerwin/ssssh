@@ -43,8 +43,8 @@ struct HostEditView: View {
                         .submitLabel(.next)
                         .onSubmit { focusedField = .hostname }
                     TextField("Hostname or IP", text: $hostname)
+                        .noAutoCapitalization()
                         #if os(iOS)
-                        .textInputAutocapitalization(.never)
                         .keyboardType(.URL)
                         #endif
                         .focused($focusedField, equals: .hostname)
@@ -58,9 +58,7 @@ struct HostEditView: View {
                         .submitLabel(.next)
                         .onSubmit { focusedField = .username }
                     TextField("Username", text: $username)
-                        #if os(iOS)
-                        .textInputAutocapitalization(.never)
-                        #endif
+                        .noAutoCapitalization()
                         .focused($focusedField, equals: .username)
                         .submitLabel(.next)
                         .onSubmit { focusedField = .startupCommand }
@@ -75,9 +73,7 @@ struct HostEditView: View {
                 }
                 Section("Startup command") {
                     TextField("Optional, e.g. tmux attach || tmux new", text: $startupCommand)
-                        #if os(iOS)
-                        .textInputAutocapitalization(.never)
-                        #endif
+                        .noAutoCapitalization()
                         .focused($focusedField, equals: .startupCommand)
                         .submitLabel(.done)
                         .onSubmit { save() }

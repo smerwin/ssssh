@@ -7,11 +7,11 @@ import Observation
 final class HostStore {
     private(set) var hosts: [SSHHost] = []
 
-    private let storageURL: URL
+    private let fileStore: JSONFileStore<[SSHHost]>
 
-    init(storageURL: URL = HostStore.defaultStorageURL()) {
-        self.storageURL = storageURL
-        load()
+    init(storageURL: URL = applicationSupportURL(filename: "hosts.json")) {
+        fileStore = JSONFileStore(url: storageURL)
+        hosts = fileStore.load(default: [])
     }
 
     func add(_ host: SSHHost) throws {
@@ -30,19 +30,7 @@ final class HostStore {
         try save()
     }
 
-    private func load() {
-        guard let data = try? Data(contentsOf: storageURL) else { return }
-        hosts = (try? JSONDecoder().decode([SSHHost].self, from: data)) ?? []
-    }
-
     private func save() throws {
-        let data = try JSONEncoder().encode(hosts)
-        try data.write(to: storageURL, options: .atomic)
-    }
-
-    private static func defaultStorageURL() -> URL {
-        let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        return dir.appendingPathComponent("hosts.json")
+        try fileStore.save(hosts)
     }
 }

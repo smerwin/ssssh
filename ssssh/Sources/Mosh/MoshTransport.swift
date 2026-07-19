@@ -140,6 +140,12 @@ final class MoshTransport: @unchecked Sendable {
     private var lastReceivedAt = Date()
     private static let silenceRebuildThreshold: TimeInterval = 12
 
+    /// Fixed heartbeat tick interval -- not mosh's adaptive
+    /// ACK_INTERVAL/SRTT-driven timing, just often enough to keep
+    /// NAT/firewall UDP mappings alive and to relay a fresh ack_num
+    /// promptly when idle.
+    private static let heartbeatInterval: TimeInterval = 3
+
     /// mosh's own conservative default application-datagram MTU
     /// (`Connection::DEFAULT_SEND_MTU` in `network.h`) minus the wire
     /// overhead this transport itself adds (8-byte nonce + 4-byte
@@ -345,10 +351,7 @@ final class MoshTransport: @unchecked Sendable {
 
     private func startHeartbeat() {
         let timer = DispatchSource.makeTimerSource(queue: queue)
-        // Not mosh's adaptive ACK_INTERVAL/SRTT-driven timing -- a fixed
-        // interval, just often enough to keep NAT/firewall UDP mappings
-        // alive and to relay a fresh ack_num promptly when idle.
-        timer.schedule(deadline: .now() + 3, repeating: 3)
+        timer.schedule(deadline: .now() + Self.heartbeatInterval, repeating: Self.heartbeatInterval)
         timer.setEventHandler { [weak self] in
             guard let self else { return }
             if Date().timeIntervalSince(self.lastReceivedAt) > Self.silenceRebuildThreshold {
@@ -519,16 +522,26 @@ final class MoshTransport: @unchecked Sendable {
             }
         }
 
-        // Only feed the part of this message's content that hasn't already
-        // been rendered via *any* accepted instruction so far, not just
-        // ones anchored on this same `old_num` -- see
-        // `furthestRenderedLength`'s doc comment for why the latter alone
-        // isn't enough to catch every way a real mosh-server's resends can
-        // overlap with content already shown.
+        let outputBytes = resolveOutputBytes(for: instruction, content: fullContent)
+
+        myAckedStateNum = instruction.newNum
+        if !outputBytes.isEmpty {
+            onOutput?(outputBytes)
+        }
+    }
+
+    /// Only feeds the part of `instruction`'s content that hasn't already
+    /// been rendered via *any* accepted instruction so far, not just ones
+    /// anchored on this same `old_num` -- see `furthestRenderedLength`'s
+    /// doc comment for why the latter alone isn't enough to catch every way
+    /// a real mosh-server's resends can overlap with content already
+    /// shown. Also retires the oldest tracked baseline once
+    /// `recentBaselines` grows past `maxRetainedBaselines`.
+    private func resolveOutputBytes(for instruction: MoshTransportInstruction, content: [UInt8]) -> [UInt8] {
         let baseCumulative = cumulativeRenderedLength[instruction.oldNum] ?? furthestRenderedLength
-        let messageCoversUpTo = baseCumulative + fullContent.count
-        let alreadyRenderedWithinThisMessage = max(0, min(furthestRenderedLength - baseCumulative, fullContent.count))
-        let outputBytes = Array(fullContent.dropFirst(alreadyRenderedWithinThisMessage))
+        let messageCoversUpTo = baseCumulative + content.count
+        let alreadyRenderedWithinThisMessage = max(0, min(furthestRenderedLength - baseCumulative, content.count))
+        let outputBytes = Array(content.dropFirst(alreadyRenderedWithinThisMessage))
         cumulativeRenderedLength[instruction.newNum] = messageCoversUpTo
         furthestRenderedLength = max(furthestRenderedLength, messageCoversUpTo)
 
@@ -541,10 +554,7 @@ final class MoshTransport: @unchecked Sendable {
             }
         }
 
-        myAckedStateNum = instruction.newNum
-        if !outputBytes.isEmpty {
-            onOutput?(outputBytes)
-        }
+        return outputBytes
     }
 }
 

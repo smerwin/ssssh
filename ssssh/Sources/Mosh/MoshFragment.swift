@@ -16,9 +16,9 @@ struct MoshFragment {
 
     func serialize() -> [UInt8] {
         precondition(fragmentNum & 0x8000 == 0, "fragment_num must fit in 15 bits")
-        var bytes = Self.bigEndianBytes64(id)
+        var bytes = MoshBigEndian.bytes64(id)
         let combined: UInt16 = (final ? 0x8000 : 0) | fragmentNum
-        bytes.append(contentsOf: Self.bigEndianBytes16(combined))
+        bytes.append(contentsOf: MoshBigEndian.bytes16(combined))
         bytes.append(contentsOf: contents)
         return bytes
     }
@@ -27,30 +27,14 @@ struct MoshFragment {
 
     static func parse(_ data: [UInt8]) throws -> MoshFragment {
         guard data.count >= headerLength else { throw ParseError() }
-        let id = bigEndianValue64(Array(data.prefix(8)))
-        let combined = bigEndianValue16(Array(data[8..<10]))
+        let id = MoshBigEndian.value64(Array(data.prefix(8)))
+        let combined = MoshBigEndian.value16(Array(data[8..<10]))
         return MoshFragment(
             id: id,
             fragmentNum: combined & 0x7FFF,
             final: (combined & 0x8000) != 0,
             contents: Array(data.dropFirst(headerLength))
         )
-    }
-
-    private static func bigEndianBytes64(_ value: UInt64) -> [UInt8] {
-        (0..<8).map { UInt8(truncatingIfNeeded: value >> (56 - $0 * 8)) }
-    }
-
-    private static func bigEndianValue64(_ bytes: [UInt8]) -> UInt64 {
-        bytes.reduce(UInt64(0)) { ($0 << 8) | UInt64($1) }
-    }
-
-    private static func bigEndianBytes16(_ value: UInt16) -> [UInt8] {
-        [UInt8(value >> 8), UInt8(value & 0xFF)]
-    }
-
-    private static func bigEndianValue16(_ bytes: [UInt8]) -> UInt16 {
-        (UInt16(bytes[0]) << 8) | UInt16(bytes[1])
     }
 }
 

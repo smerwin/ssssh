@@ -14,6 +14,11 @@ enum SSHKeyAlgorithm: String, Codable, CaseIterable {
         case .rsa: return "RSA"
         }
     }
+
+    /// Algorithms `KeyGenerator` can actually generate, for the key-
+    /// generation UI's picker -- excludes `.rsa`, which is import-only
+    /// (see its case comment).
+    static let generatable: [SSHKeyAlgorithm] = [.ed25519, .ecdsaP256, .ecdsaP384]
 }
 
 /// Metadata for a key pair whose private key material lives in the Keychain.

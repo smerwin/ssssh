@@ -51,17 +51,13 @@ struct TerminalSessionView: View {
             }
 
             switch connection.state {
-            case .connecting:
+            case .connecting, .disconnected:
                 StatusBanner(tint: SwiftUI.Color.secondary) {
-                    Text("Connecting…")
+                    Text(connection.state.shortStatusText)
                 }
-            case .failed(let message):
+            case .failed:
                 StatusBanner(tint: SwiftUI.Color.red) {
-                    Text(message)
-                }
-            case .disconnected:
-                StatusBanner(tint: SwiftUI.Color.secondary) {
-                    Text("Disconnected")
+                    Text(connection.state.shortStatusText)
                 }
             case .waitingToReconnect(let date):
                 // `Text(_:style:.timer)` counts down to `date` on its own,

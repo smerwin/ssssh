@@ -10,6 +10,11 @@ struct PaywallView: View {
 
     @State private var purchasingProductID: String?
 
+    /// Shown only until `Product.products(for:)` loads the real StoreKit
+    /// price; kept as one constant so the button and the renewal
+    /// disclaimer below can't drift out of sync with each other.
+    private static let monthlyFallbackPrice = "$0.99"
+
     var body: some View {
         NavigationStack {
             VStack(spacing: 24) {
@@ -40,14 +45,14 @@ struct PaywallView: View {
                     purchaseButton(
                         for: purchaseManager.monthlyProduct,
                         fallbackTitle: "Support Development",
-                        fallbackPrice: "$0.99/mo",
+                        fallbackPrice: "\(Self.monthlyFallbackPrice)/mo",
                         subtitle: "Monthly subscription"
                     )
                 }
                 .tint(.blue)
 
                 VStack(spacing: 4) {
-                    Text("Support Development renews monthly at \(purchaseManager.monthlyProduct?.displayPrice ?? "$0.99") until canceled. Manage or cancel anytime in Settings > Apple Account > Subscriptions.")
+                    Text("Support Development renews monthly at \(purchaseManager.monthlyProduct?.displayPrice ?? Self.monthlyFallbackPrice) until canceled. Manage or cancel anytime in Settings > Apple Account > Subscriptions.")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                         .multilineTextAlignment(.center)

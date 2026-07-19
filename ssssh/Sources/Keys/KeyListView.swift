@@ -71,34 +71,14 @@ struct KeyListView: View {
             .sheet(isPresented: $isPresentingPaywall) {
                 PaywallView()
             }
-            // .alert instead of .confirmationDialog: a confirmationDialog
-            // renders as a popover with a tail pointing at its (here,
-            // ambiguous) anchor on iPad, and only gets a Cancel button for
-            // free if no button you supply has role .cancel. .alert is a
-            // plain centered modal on every device -- no tail -- and needs
-            // an explicit Cancel button either way, which keeps that
-            // behavior obvious rather than incidental.
-            .alert(
-                "Delete Key",
-                isPresented: Binding(
-                    get: { keyPendingDeletion != nil },
-                    set: { if !$0 { keyPendingDeletion = nil } }
-                ),
-                presenting: keyPendingDeletion
-            ) { key in
-                Button("Cancel", role: .cancel) {
-                    keyPendingDeletion = nil
-                }
-                Button("Delete", role: .destructive) {
-                    try? keyStore.delete(key)
-                    keyPendingDeletion = nil
-                }
-            } message: { key in
+            .destructiveConfirmationAlert("Delete Key", item: $keyPendingDeletion) { key in
                 if key.deployedHostIDs.isEmpty {
                     Text("\"\(key.label)\" will be permanently deleted with no backup. This cannot be undone.")
                 } else {
                     Text("\"\(key.label)\" is deployed to \(key.deployedHostIDs.count) host(s) and will be permanently deleted with no backup. This cannot be undone.")
                 }
+            } onConfirm: { key in
+                try? keyStore.delete(key)
             }
         }
     }
@@ -126,16 +106,14 @@ private struct GenerateKeyView: View {
             Form {
                 Section("Label") {
                     TextField("e.g. personal", text: $label)
-                        #if os(iOS)
-                        .textInputAutocapitalization(.never)
-                        #endif
+                        .noAutoCapitalization()
                         .focused($isLabelFocused)
                         .submitLabel(.done)
                         .onSubmit { generate() }
                 }
                 Section("Algorithm") {
                     Picker(selection: $algorithm) {
-                        ForEach([SSHKeyAlgorithm.ed25519, .ecdsaP256, .ecdsaP384], id: \.self) { option in
+                        ForEach(SSHKeyAlgorithm.generatable, id: \.self) { option in
                             Text(option.displayName).tag(option)
                         }
                     } label: {
@@ -209,9 +187,7 @@ private struct ImportKeyView: View {
                 }
                 Section("Label") {
                     TextField("e.g. personal", text: $label)
-                        #if os(iOS)
-                        .textInputAutocapitalization(.never)
-                        #endif
+                        .noAutoCapitalization()
                 }
                 Section {
                     SecureField("Only if this key is passphrase-protected", text: $passphrase)
