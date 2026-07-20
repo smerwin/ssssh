@@ -37,6 +37,13 @@ final class PurchaseManager {
         updatesTask?.cancel()
     }
 
+    /// Called when the paywall is (re-)presented so an error from a
+    /// previous, unrelated attempt doesn't linger and mislead the user into
+    /// thinking something is currently wrong.
+    func clearStaleError() {
+        purchaseError = nil
+    }
+
     func loadProducts() async {
         do {
             let products = try await Product.products(for: [Self.lifetimeProductID, Self.monthlyProductID])
