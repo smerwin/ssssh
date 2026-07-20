@@ -39,6 +39,15 @@ final class HostKeyStore: @unchecked Sendable {
     private(set) var trustedFingerprints: [UUID: String] = [:]
     var pendingConfirmation: PendingHostKeyConfirmation?
 
+    /// Confirmations that arrived while one was already being shown.
+    /// `evaluate` can be entered concurrently by more than one in-flight
+    /// connection attempt (e.g. two new hosts connected within the same
+    /// second), and `pendingConfirmation` only has room for one at a time.
+    /// Queuing rather than overwriting means a second concurrent host-key
+    /// prompt no longer silently stalls the first connection's
+    /// continuation forever.
+    private var confirmationQueue: [PendingHostKeyConfirmation] = []
+
     private let fileStore: JSONFileStore<[String: String]>
 
     init(storageURL: URL = applicationSupportURL(filename: "known_hosts.json")) {
@@ -73,14 +82,17 @@ final class HostKeyStore: @unchecked Sendable {
 
         let trusted = await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
             Task { @MainActor in
-                self.pendingConfirmation = PendingHostKeyConfirmation(host: host, fingerprint: fingerprint) { decision in
+                let pending = PendingHostKeyConfirmation(host: host, fingerprint: fingerprint) { decision in
                     continuation.resume(returning: decision)
                 }
+                self.confirmationQueue.append(pending)
+                self.presentNextConfirmationIfNeeded()
             }
         }
 
         await MainActor.run {
             self.pendingConfirmation = nil
+            self.presentNextConfirmationIfNeeded()
             if trusted {
                 self.trustedFingerprints[host.id] = fingerprint
                 try? self.save()
@@ -97,6 +109,14 @@ final class HostKeyStore: @unchecked Sendable {
     func forget(hostID: UUID) {
         trustedFingerprints.removeValue(forKey: hostID)
         try? save()
+    }
+
+    /// Shows the next queued confirmation, if any and if one isn't already
+    /// being shown. Safe to call unconditionally.
+    private func presentNextConfirmationIfNeeded() {
+        guard pendingConfirmation == nil else { return }
+        guard !confirmationQueue.isEmpty else { return }
+        pendingConfirmation = confirmationQueue.removeFirst()
     }
 
     private func load() {
