@@ -28,6 +28,12 @@ struct sssshApp: App {
                 .environment(purchaseManager)
                 .sheet(item: Bindable(hostKeyStore).pendingConfirmation) { pending in
                     HostKeyConfirmationView(pending: pending)
+                        // A host-key trust decision must be explicit (Trust
+                        // or Cancel) -- swiping the sheet away would set
+                        // `pendingConfirmation` to nil without ever calling
+                        // `pending.decide`, silently stranding the
+                        // connection that's awaiting it forever.
+                        .interactiveDismissDisabled()
                 }
         }
     }
