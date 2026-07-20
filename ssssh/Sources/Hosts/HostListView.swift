@@ -11,6 +11,7 @@ struct HostListView: View {
     @State private var editingHost: SSHHost?
     @State private var copyKeyHost: SSHHost?
     @State private var hostPendingDeletion: SSHHost?
+    @State private var deleteErrorMessage: String?
     @State private var hostPendingForgetKey: SSHHost?
     @State private var pendingNewSession: SSHConnection?
 
@@ -119,7 +120,25 @@ struct HostListView: View {
             .destructiveConfirmationAlert("Delete Host", item: $hostPendingDeletion) { host in
                 Text("\"\(host.nickname)\" will be removed from ssssh. You can add it again later.")
             } onConfirm: { host in
-                try? hostStore.delete(host)
+                do {
+                    try hostStore.delete(host)
+                } catch {
+                    // Previously `try?`, which silently swallowed a disk
+                    // failure -- the confirmation alert dismissed as if the
+                    // delete succeeded, with the host quietly still present.
+                    deleteErrorMessage = error.localizedDescription
+                }
+            }
+            .alert(
+                "Couldn't Delete Host",
+                isPresented: Binding(
+                    get: { deleteErrorMessage != nil },
+                    set: { if !$0 { deleteErrorMessage = nil } }
+                )
+            ) {
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text(deleteErrorMessage ?? "")
             }
             .destructiveConfirmationAlert(
                 "Forget Known Host Key",
