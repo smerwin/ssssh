@@ -60,6 +60,20 @@ final class MoshFragmentAssembly {
             currentID = fragment.id
         } else if index < fragments.count, fragments[index] != nil {
             // Duplicate delivery of a fragment we already have -- ignore.
+            return fragmentsTotal != nil && fragmentsArrived == fragmentsTotal
+        } else if let total = fragmentsTotal, index >= total {
+            // A fragment whose index falls at or beyond an already-
+            // established final index can't belong to this set. This
+            // app's own `MoshFragmenter` always puts `final` on the
+            // highest index, but a malformed or hostile sender isn't bound
+            // by that -- without this guard, counting such a fragment
+            // would push `fragmentsArrived` past `fragmentsTotal`, which
+            // can never be satisfied again for this id (permanently
+            // wedging reassembly until a fragment with a *new* id resets
+            // state). Dropping it instead leaves this id still able to
+            // complete normally if the genuinely missing lower-index
+            // fragments arrive.
+            return fragmentsTotal != nil && fragmentsArrived == fragmentsTotal
         } else {
             if fragments.count < index + 1 {
                 fragments.append(contentsOf: [MoshFragment?](repeating: nil, count: index + 1 - fragments.count))

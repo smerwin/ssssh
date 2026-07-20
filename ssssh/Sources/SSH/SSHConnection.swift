@@ -582,8 +582,14 @@ final class SSHConnection: Identifiable, Hashable, @unchecked Sendable {
             // ended (even if a reconnect is about to be scheduled)
             // must look like one that's free to reconnect.
             self.connectTask = nil
-            self.state = newState
+            // Gate `state` the same way `onDrop` already is: a drop that
+            // resolves after the user's own `disconnect()` already set
+            // `.disconnected` (e.g. a send-completion error losing a race
+            // against `MoshTransport.stop()`/`client.close()`) must not
+            // overwrite it with `.failed(...)` -- that would flash a
+            // misleading error for a close the user explicitly asked for.
             if !self.userInitiatedClose {
+                self.state = newState
                 self.onDrop?()
             }
         }
@@ -649,6 +655,24 @@ final class SSHConnection: Identifiable, Hashable, @unchecked Sendable {
 
         guard established else {
             await emitDiagnostic("debug1: Mosh UDP path did not respond within \(Int(Self.moshConfirmationTimeout))s (likely blocked by a firewall); continuing over SSH.")
+            transport.stop()
+            return false
+        }
+
+        // The user may have called `disconnect()` while the bootstrap/UDP-
+        // confirm above was still in flight. `moshTask` (this function's
+        // caller) is a plain, unstructured `Task { }`, not a structured
+        // child of `connectTask` -- cancelling `connectTask` in
+        // `disconnect()` does not cancel this one, and nothing here checked
+        // `Task.isCancelled` either. Without this guard, a Mosh handshake
+        // that resolves *after* `disconnect()` already tore everything down
+        // would still commit below: `network.moshTransport = transport`
+        // writes into the same shared `SSHNetworkState` instance
+        // `disconnect()` just nilled out, silently resurrecting a session
+        // the user closed, complete with a live UDP transport nothing else
+        // knows to tear down.
+        let disconnectedMeanwhile = await MainActor.run { self.userInitiatedClose }
+        guard !disconnectedMeanwhile else {
             transport.stop()
             return false
         }
