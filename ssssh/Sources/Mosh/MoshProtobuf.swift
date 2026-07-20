@@ -92,9 +92,19 @@ enum MoshProtobuf {
             case 2:
                 let (length, lenBytes) = try readVarint(data, at: i)
                 i += lenBytes
-                guard i + Int(length) <= data.count else { throw DecodeError() }
-                fields.append(Field(number: fieldNumber, varint: nil, bytes: Array(data[i..<(i + Int(length))])))
-                i += Int(length)
+                // `length` is an attacker-controlled varint (up to
+                // UInt64.max) straight out of the server's decrypted
+                // payload. Comparing it against the remaining byte count
+                // before ever converting it to `Int` avoids `Int(length)`
+                // trapping on a value above `Int.max` -- a single crafted
+                // length field would otherwise crash the client, no need
+                // to defeat OCB authentication first since the legitimate
+                // key-holder can already craft this plaintext.
+                let remaining = data.count - i
+                guard length <= UInt64(remaining) else { throw DecodeError() }
+                let len = Int(length)
+                fields.append(Field(number: fieldNumber, varint: nil, bytes: Array(data[i..<(i + len)])))
+                i += len
             case 1:
                 guard i + 8 <= data.count else { throw DecodeError() }
                 i += 8
