@@ -16,6 +16,14 @@ OPENING = [  # 5 syllables
     "prompt glows, waiting still",
     "scrollback holds your past",
     "one tap, session wakes",
+    "amber glow at dusk",
+    "green phosphor awakes",
+    "touch wakes the keychain",
+    "mosh survives the drop",
+    "root prompt, green and calm",
+    "wifi drops, shell stays",
+    "signal fades to grey",
+    "one key, many hosts",
 ]
 
 MIDDLE = [  # 7 syllables
@@ -27,6 +35,14 @@ MIDDLE = [  # 7 syllables
     "each keystroke a small heartbeat",
     "trust one key, forget the rest",
     "quiet root shell, far from home",
+    "roaming packets find the way",
+    "a dropped signal finds its way",
+    "the cursor waits for your move",
+    "a whisper travels the wire",
+    "one secret, shared by two hosts",
+    "the amber prompt waits for you",
+    "predictions vanish like smoke",
+    "your glance unlocks the still vault",
 ]
 
 CLOSING = [  # 5 syllables
@@ -38,6 +54,14 @@ CLOSING = [  # 5 syllables
     "close the lid in peace",
     "shells await your touch",
     "sleep well, terminal",
+    "trust once, rest at ease",
+    "roam free, stay online",
+    "whisper, then goodnight",
+    "amber fades to black",
+    "keys kept, worries none",
+    "test well, rest easy",
+    "green light, go in peace",
+    "one tap, then be free",
 ]
 
 
