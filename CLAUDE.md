@@ -172,6 +172,30 @@ author's own checkout), here's what differs:
   options inside a `Form` `Section`. Give it `label: { EmptyView() }`
   instead of a string label; the `Section` header already provides
   context.
+- **`PurchaseManager.loadProducts()` was only ever called once, from
+  `init()`.** A transient failure (no network at cold launch) left
+  `lifetimeProduct`/`monthlyProduct` `nil` for the rest of the app
+  session -- `PaywallView` shows a perpetual "Loading…" spinner on both
+  buttons with no way to recover short of relaunching. `PaywallView` now
+  retries via `.task { if both products are still nil, loadProducts()
+  again }` on each (re-)presentation, since re-opening the paywall is the
+  view's only other chance to retry. Don't assume `PurchaseManager.init()`
+  succeeding once is enough -- StoreKit product loading is a network call
+  like any other and can fail transiently.
+- **`KeyStore.persist`/`delete` used to mutate the Keychain and the JSON
+  metadata list in an order where a failure partway through left them
+  disagreeing** -- e.g. `persist` appended the new key to the in-memory
+  `keys` array (visible immediately, `KeyStore` is `@Observable`) *before*
+  the JSON write that could fail, so a metadata-write failure left the key
+  listed in the UI while the caller was simultaneously told generation
+  failed. `delete` deleted the Keychain item *before* the JSON write that
+  could fail, so a metadata-write failure there could leave `keys.json`
+  still listing a key whose Keychain material was already gone -- it'd
+  reappear (from stale JSON) on next launch and fail the moment it was
+  actually used. Fixed by always writing/rolling back metadata (the
+  in-memory `keys` array + `keys.json`) *before* the corresponding
+  Keychain mutation, not after -- see the doc comments on both methods for
+  why that ordering, not the reverse, is the safe one.
 
 ## Importing RSA/ECDSA private keys (not implemented -- here's why)
 
@@ -619,6 +643,123 @@ If you ever "simplify" any one of these back out on the theory that the
 others already cover it, expect this exact failure mode to return under
 different specific timing: a single dropped Mosh session spawning
 multiple real, concurrent SSH connections.
+
+### A fourth real bug: `disconnect()` didn't reach the in-flight Mosh
+### upgrade attempt
+
+`SSHConnection.attemptMoshUpgrade` runs as `moshTask`, a plain `Task { }`
+created inside `runSession` -- **not** a structured child of `connectTask`.
+Cancelling `connectTask` (what `disconnect()` does) does not cancel an
+unstructured sibling `Task { }`, and `attemptMoshUpgrade` never checked
+`Task.isCancelled` either. Concretely: `network` (`SSHNetworkState`) is a
+single `let`-bound instance for the connection's entire lifetime, not
+recreated per attempt. If the user disconnected while the Mosh
+bootstrap/UDP-confirm handshake was still in flight (up to the 2s
+`moshConfirmationTimeout`), that handshake could still resolve
+successfully afterward and run its "commit to Mosh" tail --
+`network.moshTransport = transport` -- writing into the very same
+`SSHNetworkState` instance `disconnect()` had just nilled out. The session
+the user explicitly closed would silently come back as `.connected`, with
+a live `MoshTransport`/`NWConnection` nothing else knew to tear down. Fix:
+`attemptMoshUpgrade` now checks `await MainActor.run { self.userInitiatedClose }`
+immediately after the handshake succeeds and before touching `network` or
+`self.state` -- if the user disconnected meanwhile, it calls
+`transport.stop()` and bails out instead of committing. If you ever plumb
+real `Task` cancellation through this path instead, keep this check (or
+its equivalent) rather than removing it once cancellation "should" cover
+it -- unstructured tasks don't inherit cancellation automatically, so
+nothing else in this codebase currently guarantees that a torn-down
+`network` stays torn down against a late-resolving concurrent attempt.
+
+A related, narrower gap in the same area: `finishWithDrop` used to
+unconditionally overwrite `self.state = newState`, gating only `onDrop`
+behind `!userInitiatedClose`. A drop that resolves *after* the user's own
+`disconnect()` already set `.disconnected` (e.g. a send-completion error
+racing `MoshTransport.stop()`/`client.close()`) could flash a misleading
+`.failed(...)` error for a close the user explicitly asked for. `state` is
+now gated the same way `onDrop` already was.
+
+### A fifth real bug: `MoshTransport.stop()` bypassed its own serial queue
+
+Every mutator of `MoshTransport`'s `connection`/`pathMonitor`/
+`heartbeatTimer`/`isStopped` (`rebuildConnection`, `armConnection`'s
+handler, `send`, `resize`, the heartbeat and path-monitor callbacks) runs
+on the private `queue` -- except `stop()` used to mutate all of them
+directly from the caller's own thread. Since `stop()` is called from
+`SSHConnection` (main actor or its detached task), not from a closure
+already running on `queue`, this was a genuine unsynchronized race: a
+`disconnect()` landing mid-roam could race `stop()`'s `connection.cancel()`
+against `rebuildConnection`'s `connection = NWConnection(...)` reassigning
+the same reference-typed `var` concurrently. `@unchecked Sendable` on the
+type silences the compiler here but was never a guarantee this code path
+was actually race-free. Fixed by routing `stop()`'s body through
+`queue.sync { ... }` like every sibling mutator -- safe because `stop()`
+is never called from within `queue` itself (verified: no call site inside
+`MoshTransport.swift`).
+
+### A sixth real bug: two concurrent new-host prompts silently stranded
+### one connection forever
+
+`HostKeyStore.pendingConfirmation` was a single stored optional, but
+`evaluate(host:fingerprint:)` can be entered concurrently by more than one
+in-flight `connect()` -- e.g. two never-before-seen hosts opened within
+the same second. The second call's confirmation unconditionally
+overwrote the first's `pendingConfirmation`, discarding the only
+reference to the first call's `CheckedContinuation`: that connection
+hung in `.connecting` forever, no error, no timeout, recoverable only by
+force-quitting the app. Separately, the confirmation sheet
+(`sssshApp.swift`) had no `.interactiveDismissDisabled()`, so swiping it
+away (instead of tapping Trust/Cancel) set `pendingConfirmation` back to
+`nil` without ever calling `pending.decide`, orphaning that continuation
+the same way. Fixed both: `HostKeyStore.confirmationQueue` now queues
+additional confirmations instead of overwriting `pendingConfirmation`,
+presenting them one at a time as each is decided
+(`presentNextConfirmationIfNeeded`), and the sheet now has
+`.interactiveDismissDisabled()` so a host-key trust decision can only be
+made explicitly. If you ever go back to a bare `pendingConfirmation`
+optional or drop the dismiss guard, expect exactly this: a second new
+host connected in quick succession (or a swiped-away dialog) leaves a
+connection stuck "Connecting…" with no way to recover short of
+relaunching.
+
+### Hardening the wire-format parsers against a hostile `mosh-server`
+
+Three small crash-safety gaps, all in the same family: this app trusts
+that a `mosh-server` holding a valid session key won't send a
+maliciously-crafted plaintext, but a compromised or simply buggy server
+can, and none of these needed to defeat OCB authentication first -- the
+legitimate key-holder can already craft the plaintext.
+- `MoshTransport.handleIncoming` did `serverAckedCount = max(serverAckedCount,
+  instruction.ackNum)` with `instruction.ackNum` an unvalidated `UInt64`
+  from the server. `sendState()` then does
+  `sentEvents[Int(oldNum)...]` where `oldNum` is that same value --
+  a bogus `ackNum` above `sentEvents.count` (trivially true right after
+  connect, when `sentEvents` is still empty) crashes with an
+  out-of-range trap; a value above `Int.max` crashes the `Int(oldNum)`
+  conversion itself. Now clamped: `min(max(serverAckedCount,
+  instruction.ackNum), UInt64(sentEvents.count))` -- `ackNum` can never
+  legitimately exceed how many events were actually sent, so this isn't
+  just a safety net, it's the mathematically correct bound regardless of
+  trust.
+- `MoshProtobuf.parseFields`'s length-delimited field case converted an
+  attacker-controlled varint `length` straight to `Int` before bounds-
+  checking it (`i + Int(length) <= data.count`) -- `Int(length)` itself
+  traps for any value above `Int.max`. Fixed by comparing `length` against
+  the remaining byte count as `UInt64` first, only converting to `Int`
+  once it's known to fit.
+- `MoshFragmentAssembly.addFragment` could have `fragmentsArrived` exceed
+  `fragmentsTotal` if a fragment index at or beyond an already-established
+  final index arrived (this app's own `MoshFragmenter` never produces
+  that ordering, but a hostile sender isn't bound by it) -- once
+  `arrived > total`, that fragment-set id could never complete, wedging
+  reassembly until a fragment with a new id reset state. Now such a
+  fragment is dropped instead of counted, leaving the id still able to
+  complete normally from its genuinely missing lower-index fragments.
+
+If you touch any of these three, re-run `MoshTransportTests`/
+`MoshFragmentTests` and specifically think about what an adversarial
+(not just malformed) value in that field could do, not just what a real
+`mosh-server` would ever actually send.
 
 ### Still open
 
