@@ -281,12 +281,15 @@ simplifications you could "clean up," and most of them are load-bearing.
     possibly non-English locale is never needlessly overridden.
 - `MoshOCB` implements AES-128 in OCB mode (RFC 7253) from the RFC's own
   pseudocode, built on CommonCrypto's raw AES-128 ECB single-block
-  encrypt/decrypt as the "ENCIPHER"/"DECIPHER" primitive. **This exists
-  because there is no OCB implementation anywhere else available to this
-  app** -- not in CryptoKit, not in any mature Swift package -- and mosh's
-  wire protocol requires exactly this construction (AES-128, 12-byte
-  nonce, 128-bit tag, no associated data) to interoperate with a real,
-  unmodified `mosh-server`; that's fixed by the protocol, not a choice.
+  encrypt/decrypt as the "ENCIPHER"/"DECIPHER" primitive. CryptoKit has no
+  OCB implementation, but CryptoSwift has shipped one since v1.3.3 --
+  **this was written from the RFC by choice, not necessity**: implementing
+  a cipher mode from its own spec is a more interesting problem than
+  adding a dependency for it. Mosh's wire protocol does fix the
+  construction itself (AES-128, 12-byte nonce, 128-bit tag, no associated
+  data) to interoperate with a real, unmodified `mosh-server` -- that part
+  isn't negotiable the way TLS cipher suites are -- but which
+  implementation satisfies it was a preference, not a constraint.
   It's validated in `MoshOCBTests` against all 16 of RFC 7253 Appendix A's
   published test vectors (parsed programmatically out of the RFC text
   during development, not hand-transcribed, since a single mistyped hex

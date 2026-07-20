@@ -2,13 +2,16 @@ import CommonCrypto
 import Foundation
 
 /// AES-128 in OCB mode (RFC 7253), implemented directly from the RFC's
-/// pseudocode -- there is no OCB implementation in CryptoKit, and no mature
-/// Swift package for it either, so this can't be assembled from an existing
-/// library the way the rest of this app's crypto is (see `KeyGenerator`,
-/// `HostKeyStore`). Mosh's wire protocol requires exactly this construction
-/// (AES-128, a 12-byte nonce, a 128-bit tag, no associated data) to
-/// interoperate with a real, unmodified `mosh-server` -- this is not
-/// negotiable the way TLS cipher suites are.
+/// pseudocode. CryptoKit has no OCB implementation, but CryptoSwift
+/// (krzyzanowskim/CryptoSwift) has shipped one since v1.3.3, so this
+/// wasn't unavoidable the way it might look -- it was written from the RFC
+/// because implementing a cipher mode from its own spec is a more
+/// interesting problem than adding a dependency for it, not because no
+/// alternative existed. Mosh's wire protocol requires exactly this
+/// construction (AES-128, a 12-byte nonce, a 128-bit tag, no associated
+/// data) to interoperate with a real, unmodified `mosh-server` -- that part
+/// is fixed by the protocol; the choice of implementation, from-RFC versus
+/// a third-party package, was not.
 ///
 /// Validated against RFC 7253 Appendix A's published (K, N, A, P, C) test
 /// vectors in `MoshOCBTests`, covering empty/partial/full/multi-block
