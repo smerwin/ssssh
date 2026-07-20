@@ -8,6 +8,7 @@ struct KeyListView: View {
     @State private var isPresentingImporter = false
     @State private var isPresentingPaywall = false
     @State private var keyPendingDeletion: SSHKey?
+    @State private var deleteErrorMessage: String?
 
     var body: some View {
         NavigationStack {
@@ -78,7 +79,26 @@ struct KeyListView: View {
                     Text("\"\(key.label)\" is deployed to \(key.deployedHostIDs.count) host(s) and will be permanently deleted with no backup. This cannot be undone.")
                 }
             } onConfirm: { key in
-                try? keyStore.delete(key)
+                do {
+                    try keyStore.delete(key)
+                } catch {
+                    // Previously `try?`, which silently swallowed a
+                    // Keychain/disk failure -- the confirmation alert
+                    // dismissed as if the delete succeeded, with the key
+                    // quietly still present.
+                    deleteErrorMessage = error.localizedDescription
+                }
+            }
+            .alert(
+                "Couldn't Delete Key",
+                isPresented: Binding(
+                    get: { deleteErrorMessage != nil },
+                    set: { if !$0 { deleteErrorMessage = nil } }
+                )
+            ) {
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text(deleteErrorMessage ?? "")
             }
         }
     }
@@ -244,6 +264,10 @@ private struct ImportKeyView: View {
     private func importKey() {
         guard let pickedFileContents else { return }
         guard !label.trimmingCharacters(in: .whitespaces).isEmpty else { return }
+        // Clear the plaintext passphrase on every path, not just success --
+        // it shouldn't linger in memory after a failed attempt either (same
+        // reasoning as `CopyKeyToServerView.copyKey()`'s password defer).
+        defer { passphrase = "" }
         do {
             _ = try keyStore.importKey(label: label, fileContents: pickedFileContents, passphrase: passphrase)
             dismiss()

@@ -319,14 +319,26 @@ final class MoshTransport: @unchecked Sendable {
         sendState()
     }
 
+    /// Called externally by `SSHConnection`, never from a closure already
+    /// running on `queue` -- safe to route synchronously through it like
+    /// every other mutator here (`rebuildConnection`, `armConnection`'s
+    /// handler, `send`, `resize`). Without this, `stop()` used to mutate
+    /// `isStopped`/`heartbeatTimer`/`pathMonitor`/`connection` directly from
+    /// the caller's own thread, unsynchronized against a `rebuildConnection`
+    /// that might be concurrently reassigning `connection` on `queue` --
+    /// e.g. disconnecting mid-roam could race `stop()`'s `connection.cancel()`
+    /// against `rebuildConnection`'s `connection = NWConnection(...)` on the
+    /// same reference-typed `var`.
     func stop() {
-        isStopped = true
-        heartbeatTimer?.cancel()
-        heartbeatTimer = nil
-        pathMonitor?.cancel()
-        pathMonitor = nil
-        connection.stateUpdateHandler = nil
-        connection.cancel()
+        queue.sync {
+            isStopped = true
+            heartbeatTimer?.cancel()
+            heartbeatTimer = nil
+            pathMonitor?.cancel()
+            pathMonitor = nil
+            connection.stateUpdateHandler = nil
+            connection.cancel()
+        }
     }
 
     func send(_ bytes: [UInt8]) {
@@ -499,7 +511,15 @@ final class MoshTransport: @unchecked Sendable {
 
         // Ack processing happens regardless of whether the diff below ends
         // up applicable, matching `Transport::recv`'s ordering in mosh.
-        serverAckedCount = max(serverAckedCount, instruction.ackNum)
+        // Clamped to `sentEvents.count`: `ackNum` is a value the server
+        // sends us, and it can never legitimately exceed how many events
+        // we've actually sent it, but nothing stops a compromised or
+        // malformed server from claiming otherwise. Unclamped, a bogus
+        // `ackNum` becomes `sendState()`'s `oldNum` and crashes on
+        // `sentEvents[Int(oldNum)...]` -- one hostile packet, deterministic
+        // trap, no auth bypass needed since the sender already holds a
+        // valid session key.
+        serverAckedCount = min(max(serverAckedCount, instruction.ackNum), UInt64(sentEvents.count))
 
         // Dedup first: a state at or behind where we already are is either
         // a resend we've fully applied, or superseded by something later

@@ -38,14 +38,41 @@ final class KeyStore {
         )
         try Keychain.save(tag: key.keychainTag, data: generated.privateKeyData)
         keys.append(key)
-        try save()
+        do {
+            try save()
+        } catch {
+            // Roll back so a metadata-write failure (e.g. disk full)
+            // doesn't leave this key silently listed in memory -- `keys`
+            // is `@Observable`, so the list would otherwise update
+            // immediately -- or orphaned in the Keychain, both while the
+            // caller is being told generation/import failed.
+            keys.removeLast()
+            try? Keychain.delete(tag: key.keychainTag)
+            throw error
+        }
         return key
     }
 
     func delete(_ key: SSHKey) throws {
-        try Keychain.delete(tag: key.keychainTag)
+        // Metadata first, Keychain material last: if this instead deleted
+        // Keychain material first and the metadata write below then
+        // failed, `keys.json` would still list a key whose material is
+        // already gone -- surfacing as a key that reappears (e.g. after
+        // relaunch, since `keys` gets reloaded from that stale JSON) but
+        // fails the moment it's actually used. Writing metadata first and
+        // rolling it back on failure keeps key + material consistent;
+        // deleting the material last leaves at worst an orphaned, inert
+        // Keychain item if that final step itself fails, never a listed
+        // key with missing material.
+        let previousKeys = keys
         keys.removeAll { $0.id == key.id }
-        try save()
+        do {
+            try save()
+        } catch {
+            keys = previousKeys
+            throw error
+        }
+        try Keychain.delete(tag: key.keychainTag)
     }
 
     /// Reconstitutes the private key material for authenticating with `key`.

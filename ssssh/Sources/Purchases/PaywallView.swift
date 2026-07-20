@@ -86,6 +86,18 @@ struct PaywallView: View {
             .onChange(of: purchaseManager.isUnlocked) { _, isUnlocked in
                 if isUnlocked { dismiss() }
             }
+            .onAppear { purchaseManager.clearStaleError() }
+            .task {
+                // `PurchaseManager.init()` only calls `loadProducts()`
+                // once. If that attempt failed (e.g. no network at cold
+                // launch), both buttons below are stuck showing "Loading…"
+                // forever with no retry -- reopening the paywall later,
+                // once connectivity is back, is this view's only chance to
+                // recover without a full app relaunch.
+                if purchaseManager.lifetimeProduct == nil && purchaseManager.monthlyProduct == nil {
+                    await purchaseManager.loadProducts()
+                }
+            }
         }
     }
 
