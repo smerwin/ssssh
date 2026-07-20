@@ -2,6 +2,8 @@
 
 ### [Join the beta now →](https://testflight.apple.com/join/zBxYGV9y)
 
+Marketing site: [smerwin.com/ssssh](https://smerwin.com/ssssh)
+
 # ssssh
 
 smerwin's simple ssh — a minimal, native SSH client for iPhone and iPad.
