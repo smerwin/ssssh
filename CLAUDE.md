@@ -238,6 +238,80 @@ here's the actual constraint, for whoever picks this up next:
   between those two, not by looking for a third way around Citadel --
   there wasn't one as of Citadel 0.7.x.
 
+## Apple Shortcuts support (not started -- investigation notes)
+
+Nobody has written any code for this yet. This is a scoping writeup from
+a planning conversation, kept here so a future session doesn't have to
+re-derive it -- treat it as a starting point, not a finished design.
+
+The mechanism is the **App Intents** framework. It doesn't need a
+separate extension target -- `deploymentTarget.iOS` is already `17.0` in
+`project.yml`, and App Intents can be declared directly in the `ssssh`
+app target, exposed to Shortcuts/Siri via an `AppShortcutsProvider`.
+
+### What would need to be built
+
+1. An `AppEntity` wrapping `SSHHost` (`Sources/Models/SSHHost.swift`),
+   with an `EntityQuery` backed by `HostStore`
+   (`Sources/Hosts/HostStore.swift`), so a Shortcut can pick "Connect to
+   `<nickname>`" from a parameter picker instead of typing a hostname.
+2. A **"Run Command"** `AppIntent`: host + command string in, output
+   text out. This should reuse the existing one-shot Citadel pattern
+   from `SSHCopyID.swift` and `MoshBootstrap.swift`
+   (`SSHClient.connect(...)` -> `executeCommand`/`executeCommandStream`),
+   *not* the full `SSHConnection` state machine -- there's no live
+   terminal UI involved, just connect, run one command, capture output,
+   disconnect. This is the intent that's actually useful for Shortcuts:
+   piping output into notifications, other automations, etc.
+3. A **"Connect"** `AppIntent` that opens the app and calls
+   `SessionManager.session(for:)` (`Sources/SSH/SessionManager.swift`)
+   for a given host -- a Shortcuts-triggerable deep link into a live
+   terminal. This one has to run in the foreground
+   (`openAppWhenRun = true`) since it's opening an interactive session,
+   not returning a value.
+4. An `AppShortcutsProvider` with phrases ("Run <command> on <host> in
+   ssssh") so these surface in the Shortcuts app and Siri without the
+   user having to build anything by hand first.
+
+### Open questions / friction points specific to this codebase
+
+- **Face ID/Keychain gating.** Private key material lives behind
+  `KeyStore` (`Sources/Keys/KeyStore.swift`), which is Face ID-gated.
+  A "Run Command" intent triggered from an unattended automation (not
+  tapped by the user in the moment) will hit that biometric prompt
+  out-of-process -- **untested** whether `LAContext` auth actually
+  surfaces correctly from an App Intent's `perform()` when the app isn't
+  foregrounded, or whether "Run Command" also needs
+  `openAppWhenRun = true` after all, which would defeat the "runs
+  silently from an automation" use case that makes it worth building.
+  Verify this early -- it's the one finding here that could change the
+  whole design, not just an implementation detail.
+- **Actor isolation.** `SSHConnection`/`SessionManager` are `@MainActor`
+  (see "Concurrency architecture" above), but "Run Command" doesn't want
+  that machinery at all -- it should talk to Citadel directly the way
+  `SSHCopyID` does, off the main actor, same as those existing one-shot
+  callers.
+- **Host-key trust.** `HostKeyStore` (`Sources/Hosts/HostKeyStore.swift`
+  per the concurrency-architecture section above) currently confirms
+  unrecognized hosts via a UI sheet
+  (`HostKeyConfirmationView`/`sssshApp.swift`). A background "Run
+  Command" intent hitting a host with no stored, trusted key has nowhere
+  to show that sheet -- it should fail with a clear error ("connect from
+  the app once first to trust this host's key") rather than trying to
+  present UI out of context, and definitely should not silently
+  auto-trust.
+
+### Recommended scope for a first pass
+
+Build **"Run Command" only** first. It reuses existing one-shot
+connection code, doesn't touch the live-terminal UI at all, and is the
+actual Shortcuts use case people ask for ("turn off my server", "check
+disk space", piped into a notification). Add "Connect"/open-terminal as
+a separate second pass once "Run Command" is proven out end-to-end
+(especially the Face ID question above) -- building both, plus
+host-key/Face ID handling, in one pass is more scope than a first PR
+here should take on.
+
 ## Concurrency architecture (why the SSH code looks the way it does)
 
 `SSHConnection` and `HostKeyStore` are `@MainActor @Observable` for UI
