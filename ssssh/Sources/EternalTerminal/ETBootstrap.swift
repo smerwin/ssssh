@@ -67,6 +67,21 @@ enum ETBootstrap {
     private static let idLength = 16
     private static let passkeyLength = 32
 
+    /// Same root cause and fix as `MoshBootstrap.pathPrefix`: a plain SSH
+    /// exec request runs non-interactively and non-login (Citadel's
+    /// `executeCommandStream`, like `executeCommand`, invokes the remote
+    /// shell as `$SHELL -c "..."`, not `$SHELL -lc "..."`), so on macOS
+    /// `~/.zprofile` -- where Homebrew's installer adds its `brew shellenv`
+    /// PATH line -- never gets sourced. `etterminal` installed via `brew
+    /// install eternalterminal` at `/opt/homebrew/bin` (Apple Silicon) or
+    /// `/usr/local/bin` (Intel) is then invisible to this exec even though
+    /// it's genuinely installed and on the host's own interactive PATH --
+    /// reported directly against a real Homebrew-installed `etterminal`.
+    /// Prepending these well-known install locations sidesteps the
+    /// login-shell-sourcing question entirely, same as Mosh's fix --
+    /// harmless no-ops on hosts that don't have them.
+    private static let pathPrefix = "PATH=\"$PATH:/opt/homebrew/bin:/usr/local/bin:/home/linuxbrew/.linuxbrew/bin\""
+
     /// Bare TCP connect-then-close, mirroring `et`'s own `ping()` exactly:
     /// a successful connect (even though nothing is ever sent or read) is
     /// the entire check. Run *before* touching SSH at all, same as the
@@ -134,7 +149,7 @@ enum ETBootstrap {
     /// `MoshBootstrap.run`: a missing `etterminal` is a non-zero shell exit
     /// whose *text* this needs to inspect, not just its code.
     private static func run(client: Citadel.SSHClient, id: String, passkey: String) async throws -> String {
-        let command = "echo '\(id)/\(passkey)_\(clientTerm)' | etterminal --verbose=0"
+        let command = "echo '\(id)/\(passkey)_\(clientTerm)' | \(pathPrefix) etterminal --verbose=0"
         var text = ""
         do {
             let stream = try await client.executeCommandStream(command)

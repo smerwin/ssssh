@@ -994,15 +994,36 @@ does the bare TCP connect-then-close check via `NWConnection` (mirroring
 `et`'s own `ping()` exactly, including running *before* SSH is touched at
 all), then it generates a 16-char id / 32-char passkey with the same
 `'X','X','X'`-prefix mangling `SetupSsh` does, runs `echo
-'<id>/<passkey>_<clientTerm>' | etterminal --verbose=0` over the given
-already-authenticated `Citadel.SSHClient`, and parses the `IDPASSKEY:`
-reply with the same **fixed-width substring** approach the real client
-uses (`16 + 1 + 32` characters right after the marker, split on `/`) rather
-than scanning for a delimiter-terminated line -- see the doc comment on
-`ETBootstrap` for the correction this was grounded against (an earlier pass
-through this file had summarized both the mangling and the parsing
-imprecisely; reading `SshSetupHandler.cpp`'s `SetupSsh` and
+'<id>/<passkey>_<clientTerm>' | PATH="$PATH:/opt/homebrew/bin:/usr/local/bin:/home/linuxbrew/.linuxbrew/bin" etterminal --verbose=0`
+over the given already-authenticated `Citadel.SSHClient`, and parses the
+`IDPASSKEY:` reply with the same **fixed-width substring** approach the
+real client uses (`16 + 1 + 32` characters right after the marker, split
+on `/`) rather than scanning for a delimiter-terminated line -- see the
+doc comment on `ETBootstrap` for the correction this was grounded against
+(an earlier pass through this file had summarized both the mangling and
+the parsing imprecisely; reading `SshSetupHandler.cpp`'s `SetupSsh` and
 `TerminalMain.cpp` directly caught it before it became a real bug).
+
+**A second real bug, reported directly against a Homebrew-installed
+`etterminal` on macOS**: the same non-interactive, non-login SSH exec
+issue documented on `MoshBootstrap.pathPrefix` (`$SHELL -c`, not `$SHELL
+-lc`, so `~/.zprofile` -- where Homebrew's installer adds its `brew
+shellenv` PATH line -- never gets sourced) applies identically here, but
+`ETBootstrap.run`'s command originally had no equivalent `PATH` prefix at
+all. A Homebrew-installed `etterminal` at `/opt/homebrew/bin` (Apple
+Silicon) or `/usr/local/bin` (Intel) was therefore invisible to this exec
+even though it was genuinely installed and on the host's own interactive
+PATH -- `detect` would fail with `noEtTerminal` (a plain "command not
+found") on exactly the hosts this feature is meant to work against. Fixed
+by adding the identical `pathPrefix` `PATH=` env-assignment prefix
+`MoshBootstrap` already uses, prepended to the `etterminal` invocation the
+same way `MoshBootstrap` prepends it to `mosh-server`. Unverified against
+a real Homebrew-installed `etserver`/`etterminal` in this environment (the
+Docker-based verification in "What's implemented" below uses Debian's apt
+repo, not Homebrew, so it never exercised this exact PATH gap) -- if you
+pick this up next and have a real Mac running `etserver` via Homebrew,
+confirm `ETBootstrap.detect` now succeeds against it before trusting this
+fix further.
 
 This only gets as far as detection/registration -- it does not open the
 ET-protocol TCP connection, implement its XSalsa20-Poly1305 framing, or
