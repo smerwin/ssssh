@@ -1143,20 +1143,40 @@ way `MoshTransport`'s roaming does for UDP.
 
 ### Wire framing and crypto
 
-Every message on the wire is a **4-byte big-endian length prefix**
-(covering the entire following packet, header included) plus a serialized
-`Packet` (`src/base/Packet.hpp`): `[1 byte: encrypted flag][1 byte:
-packet type][ciphertext-or-plaintext payload]`. The 2-byte flag+type
-prefix is **not** covered by encryption or the MAC -- only `payload` is.
-Payloads are real **protobuf** (proto2, `LITE_RUNTIME`, schemas in
-`proto/ET.proto`/`proto/ETerminal.proto`) -- unlike Mosh, where this
-repo's `MoshProtobuf.swift` deliberately hand-rolled a minimal reader/
-writer because Mosh's three message shapes never needed more than varint
-and length-delimited fields. ET's schemas include at least one `map<string,
-string>` field (`InitialPayload.environmentvariables`) and more message
-variety overall (11 `TerminalPacketType` values vs. Mosh's 3), so a
-from-scratch client here would need to either extend a hand-rolled reader/
-writer to cover map fields, or take a real dependency on SwiftProtobuf --
+**Correction, from reading `src/base/SocketHandler.hpp`'s `readPacket`/
+`writePacket` directly rather than assuming a conventional 4-byte
+network-order length prefix**: the prefix is an **8-byte `int64_t`**
+(`sizeof(int64_t)`, not 4), and it is read/written via a raw
+`readAll`/`writeAllOrThrow` memcpy of the in-memory representation with
+**no byte-swap anywhere in that path** (no `htonll`/`ntohll` call) -- so
+it's effectively **little-endian**, since every platform ET ships for is
+little-endian, not the big-endian "network order" a length prefix would
+conventionally use. A Swift port must write/read an 8-byte little-endian
+length, not a 4-byte big-endian one, or it will corrupt every message
+past the first.
+
+With that corrected: every message on the wire is that 8-byte
+little-endian length prefix (covering the entire following packet, header
+included) plus a serialized `Packet` (`src/base/Packet.hpp`): `[1 byte:
+encrypted flag][1 byte: packet type][ciphertext-or-plaintext payload]`.
+The 2-byte flag+type prefix is **not** covered by encryption or the MAC --
+only `payload` is. Payloads are real **protobuf** (proto2, `LITE_RUNTIME`,
+schemas in `proto/ET.proto`/`proto/ETerminal.proto`) -- unlike Mosh, where
+this repo's `MoshProtobuf.swift` deliberately hand-rolled a minimal
+reader/writer because Mosh's three message shapes never needed more than
+varint and length-delimited fields. ET's schemas include at least one
+`map<string, string>` field (`InitialPayload.environmentvariables`) and
+more message variety overall (a second correction: actually **9**
+`TerminalPacketType` values as of the schema fetched directly from
+`proto/ETerminal.proto` during this pass -- `KEEP_ALIVE`, `TERMINAL_BUFFER`,
+`TERMINAL_INFO`, `PORT_FORWARD_DESTINATION_REQUEST`,
+`PORT_FORWARD_DESTINATION_RESPONSE`, `PORT_FORWARD_DATA`,
+`TERMINAL_USER_INFO`, `TERMINAL_INIT`, `JUMPHOST_INIT` -- not the 11
+originally guessed here; note enum values 3 and 4 are simply unused, and
+`PortForwardSourceRequest`/`PortForwardSourceResponse` exist as messages
+with no corresponding `TerminalPacketType` entry of their own) vs. Mosh's
+3, so a from-scratch client here would need to either extend a hand-rolled
+reader/writer to cover map fields, or take a real dependency on SwiftProtobuf --
 worth deciding deliberately rather than defaulting to whichever seems
 easiest at the time.
 
@@ -1391,19 +1411,38 @@ throwaway SwiftPM sandbox before landing in the Xcode project, the same
 fast-iteration approach worth reaching for again for the remaining pieces
 below rather than iterating via full `xcodebuild` runs.
 
+**The packet-envelope framing is done too** --
+`ssssh/Sources/EternalTerminal/ETPacket.swift`'s `ETPacket` mirrors
+`Packet::serialize`/its deserializing constructor (`encrypted(1) ||
+header(1) || payload`), and `ETPacketStreamReader` incrementally
+reassembles packets from a raw byte stream using the **8-byte
+little-endian** length prefix `SocketHandler::readPacket`/`writePacket`
+actually use -- a real, load-bearing correction to this file's original
+"4-byte big-endian" assumption (see "Wire framing and crypto" above);
+getting this wrong would have silently corrupted every message after the
+first. `ETPacketTests` covers round-tripping, reassembly across
+arbitrarily unaligned chunk boundaries (the realistic TCP case, not
+message-aligned reads), multiple packets delivered in one read, the
+zero-length-message no-op case, and rejecting an oversized or negative
+length prefix before waiting for data that would never arrive. This layer
+is deliberately independent of what's inside `payload` -- it doesn't know
+or care that real payloads are protobuf-encoded.
+
 What's next, in the order this section originally intended (wire protocol
 only, nothing UI/integration-level yet):
-1. The 4-byte-length-prefixed `Packet` framing and the protobuf message
-   shapes (`proto/ET.proto`/`proto/ETerminal.proto`) -- decide
-   hand-rolled-with-map-support vs. SwiftProtobuf here rather than
-   defaulting to whichever seems easiest mid-implementation.
+1. The protobuf message shapes (`proto/ET.proto`/`proto/ETerminal.proto`,
+   9 `TerminalPacketType` values -- see the correction above for the exact
+   count and which are unused) -- decide hand-rolled-with-map-support vs.
+   SwiftProtobuf here rather than defaulting to whichever seems easiest
+   mid-implementation.
 2. The sequence-numbered resend/replay buffer described in "Resumption/
    reconnect protocol" above.
 3. Only after 1-2 are independently verified: a real `NWConnection`-based
-   `ETTransport` wiring them together with `ETCrypto`, verified against the
-   same live `etserver` container `ETBootstrap` already proved out, the same
-   incremental "verify each piece against ground truth before composing
-   them" discipline the Mosh implementation followed throughout this file.
+   `ETTransport` wiring `ETPacket`/`ETPacketStreamReader`/`ETCrypto`/the
+   resend buffer together, verified against the same live `etserver`
+   container `ETBootstrap` already proved out, the same incremental
+   "verify each piece against ground truth before composing them"
+   discipline the Mosh implementation followed throughout this file.
 
 ## TestFlight release notes
 

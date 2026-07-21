@@ -9,6 +9,7 @@
 /* Begin PBXBuildFile section */
 		00BF58ECFF84885E38CA557E /* JSONFileStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = D676E02EEAA0C890942F393E /* JSONFileStore.swift */; };
 		01CE875BDB5954B6B4BF14CF /* MoshCompressionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 804DA5F2C633BB71591F0177 /* MoshCompressionTests.swift */; };
+		01D6A4F3B0AF9B71907640A5 /* ETPacket.swift in Sources */ = {isa = PBXBuildFile; fileRef = 40E96CB53C41E1FDD032BF72 /* ETPacket.swift */; };
 		01FB36750E184974DAB9959D /* KeyImporter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7E73836E334216FB734F29B0 /* KeyImporter.swift */; };
 		06EA10E240114557326758BF /* MoshMessagesTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2CFE9C287636D0D3130956AD /* MoshMessagesTests.swift */; };
 		0B2BAF96DEE671D53D1A52CB /* TerminalSessionView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 23E37953DBEC62F4E6A8BB08 /* TerminalSessionView.swift */; };
@@ -19,6 +20,7 @@
 		1335786151BC0EFB30F2D43C /* HostKeyStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8DDB708C5F5E8FDB459230F8 /* HostKeyStoreTests.swift */; };
 		15F416C6F59FCC426E7A3406 /* MoshTransportTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE7168488C5EDC2F8E0CD38D /* MoshTransportTests.swift */; };
 		1C238A3BEDE2C2FBEB99CD02 /* SSHConnection.swift in Sources */ = {isa = PBXBuildFile; fileRef = C6F1F3497C6EAE8353915767 /* SSHConnection.swift */; };
+		25B2C855FFB8B9FBEF0A9803 /* ETPacketTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 47AAD4D2E4B4CE2A1A4016BA /* ETPacketTests.swift */; };
 		2642117F49E98E090CC06422 /* TerminalTheme.swift in Sources */ = {isa = PBXBuildFile; fileRef = DB5762D5CFBEF2BCFFBA74A2 /* TerminalTheme.swift */; };
 		2972D738189813A40714C0AD /* ETCryptoTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8791387CC5878FFCEF14DDC2 /* ETCryptoTests.swift */; };
 		2AA164B80BDC45B6130B692E /* TerminalViewStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 572153F23C6A8561229486FA /* TerminalViewStoreTests.swift */; };
@@ -115,6 +117,8 @@
 		337239C4F71A21FD8571B2E2 /* KeyImporterTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyImporterTests.swift; sourceTree = "<group>"; };
 		3612B0FFC5B0F56BAEFAFB43 /* MoshProtobuf.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MoshProtobuf.swift; sourceTree = "<group>"; };
 		3AEC1DA09DDD2E184B74495F /* ci_post_clone.sh */ = {isa = PBXFileReference; lastKnownFileType = text.script.sh; path = ci_post_clone.sh; sourceTree = "<group>"; };
+		40E96CB53C41E1FDD032BF72 /* ETPacket.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ETPacket.swift; sourceTree = "<group>"; };
+		47AAD4D2E4B4CE2A1A4016BA /* ETPacketTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ETPacketTests.swift; sourceTree = "<group>"; };
 		483059594C84387D2DE5677B /* MoshPredictionEngineTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MoshPredictionEngineTests.swift; sourceTree = "<group>"; };
 		4A78C686CE53EFE2F7F711D9 /* ssssh.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = ssssh.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		50ABEE6C258CD87110CA52A4 /* PurchaseManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PurchaseManager.swift; sourceTree = "<group>"; };
@@ -244,6 +248,7 @@
 			children = (
 				CEDC2DA3BCA582DE739CBA98 /* ETBootstrap.swift */,
 				D6EA51B276D3CD2D2162C21F /* ETCrypto.swift */,
+				40E96CB53C41E1FDD032BF72 /* ETPacket.swift */,
 			);
 			path = EternalTerminal;
 			sourceTree = "<group>";
@@ -294,6 +299,7 @@
 			children = (
 				9F8DFB813CD93880EFBDF5FF /* ETBootstrapTests.swift */,
 				8791387CC5878FFCEF14DDC2 /* ETCryptoTests.swift */,
+				47AAD4D2E4B4CE2A1A4016BA /* ETPacketTests.swift */,
 				E82CF65042269BF21437CD15 /* HostKeyFingerprintTests.swift */,
 				8DDB708C5F5E8FDB459230F8 /* HostKeyStoreTests.swift */,
 				E83B2F451E477D4BE69A1E48 /* HostStoreTests.swift */,
@@ -530,6 +536,7 @@
 				0F1D1B02BEF58C9BD4505839 /* DestructiveConfirmationAlert.swift in Sources */,
 				4A7B5063C9FBC3E169A47F6C /* ETBootstrap.swift in Sources */,
 				F8C0FA8E928E44CA6246F760 /* ETCrypto.swift in Sources */,
+				01D6A4F3B0AF9B71907640A5 /* ETPacket.swift in Sources */,
 				7EA6B690FF1844EDB40F1B0A /* HostEditView.swift in Sources */,
 				4F79F592283CADCEB8E1CFB6 /* HostKeyConfirmationView.swift in Sources */,
 				3EB6F45B46C155EED4B667A2 /* HostKeyFingerprint.swift in Sources */,
@@ -583,6 +590,7 @@
 			files = (
 				F4B9E47A974DD2852E2E4219 /* ETBootstrapTests.swift in Sources */,
 				2972D738189813A40714C0AD /* ETCryptoTests.swift in Sources */,
+				25B2C855FFB8B9FBEF0A9803 /* ETPacketTests.swift in Sources */,
 				37D5E511623C8A86342F7AA9 /* HostKeyFingerprintTests.swift in Sources */,
 				1335786151BC0EFB30F2D43C /* HostKeyStoreTests.swift in Sources */,
 				86BF41EA14F33560DF1D7C54 /* HostStoreTests.swift in Sources */,
