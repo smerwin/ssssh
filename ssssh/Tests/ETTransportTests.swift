@@ -42,4 +42,32 @@ struct ETTransportTests {
 
         #expect(!fired)
     }
+
+    /// A rejected reconnect (e.g. a real wifi/5G handoff reported in
+    /// production, rejected with `invalidKey`/"Client is not registered")
+    /// gets bounded retries with backoff rather than tearing the session
+    /// down on the very first rejection -- see `consecutiveReconnectFailures`'
+    /// doc comment on `ETTransport` for the full reasoning. The first retry
+    /// stays immediate (a real handoff usually recovers on that first
+    /// attempt), then backs off exponentially, capped at 30s -- deliberately
+    /// not gated on a `nextAllowedRebuildAttempt`-style timestamp the way
+    /// `MoshTransport.rebuildBackoff` is, since `ETTransport` has no
+    /// periodic heartbeat/path-monitor drumbeat to rely on for a later
+    /// retry once a gate would let one through.
+    @Test("reconnectBackoff stays immediate on the first failure, then grows and caps at 30s")
+    func reconnectBackoffGrowsAndCaps() {
+        #expect(ETTransport.reconnectBackoff(forFailureCount: 1) == 0)
+        #expect(ETTransport.reconnectBackoff(forFailureCount: 2) == 2)
+        #expect(ETTransport.reconnectBackoff(forFailureCount: 3) == 4)
+        #expect(ETTransport.reconnectBackoff(forFailureCount: 4) == 8)
+        #expect(ETTransport.reconnectBackoff(forFailureCount: 5) == 16)
+        #expect(ETTransport.reconnectBackoff(forFailureCount: 6) == 30)
+        #expect(ETTransport.reconnectBackoff(forFailureCount: 100) == 30)
+    }
+
+    @Test("reconnectBackoff treats non-positive counts as the first, immediate attempt")
+    func reconnectBackoffHandlesNonPositiveCounts() {
+        #expect(ETTransport.reconnectBackoff(forFailureCount: 0) == 0)
+        #expect(ETTransport.reconnectBackoff(forFailureCount: -1) == 0)
+    }
 }
