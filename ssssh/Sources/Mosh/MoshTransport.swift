@@ -18,11 +18,18 @@ import Network
 ///   protocol (the receiver dedupes by state number and validates
 ///   `old_num` against what it has), just less bandwidth-efficient under
 ///   loss or high latency.
-/// - **Single-position receiver, not a retained window.** Real mosh keeps
-///   several recently-received host states so an out-of-order arrival can
-///   still be used. This only ever tracks its current position and drops
-///   anything whose `old_num` doesn't match it exactly, relying on the
-///   server's own periodic resends to eventually redeliver in order.
+/// - **A single acked position plus a small equivalence range, not a
+///   retained multi-state window.** Real mosh keeps a whole history of
+///   received host states (a map from state number to a full `Complete`
+///   object) so a diff anchored on any of them can be applied onto its own
+///   correct starting point. This transport doesn't model the terminal
+///   itself (see `MoshPredictionEngine`'s doc comment on why), so it has no
+///   per-state framebuffer to apply an old diff onto -- it can only ever
+///   safely apply a diff *in full*, onto whatever's already on screen, and
+///   only when that's provably the same framebuffer the diff was computed
+///   against. See `equivalentSince`'s doc comment for exactly what "provably
+///   the same" means and why anything outside that range is dropped
+///   outright rather than partially applied.
 /// - **No adaptive RTT/congestion control.** Sends happen immediately on
 ///   new input plus a fixed heartbeat interval, not mosh's SRTT-driven
 ///   timeout/backoff.
@@ -166,62 +173,64 @@ final class MoshTransport: @unchecked Sendable {
 
     // MARK: Incoming (HostBuffers.HostMessage / "HostStream") state.
     private var myAckedStateNum: UInt64 = 0
-    /// A real mosh-server pipelines: it can send several successive
-    /// diffs all anchored on the same `old_num` before it's confirmed
-    /// (via my `ack_num`) that I've caught up to any of them, because its
-    /// own `assumed_receiver_state` only optimistically advances once
-    /// enough time has passed to assume an earlier send arrived. Verified
-    /// against a real mosh-server: a login-banner burst produced two
-    /// successive states both anchored on the same initial reference.
-    /// Validating `old_num` against only the single latest
-    /// `myAckedStateNum` silently dropped the second one's real content
-    /// (its base no longer matched "current"), so recently-superseded
-    /// baselines stay valid a while longer here too -- capped in size
-    /// since this only needs to cover a short pipelining burst, not
-    /// mosh's own unbounded-until-throwaway_num retention.
-    private var recentBaselines: [UInt64] = []
-    private static let maxRetainedBaselines = 16
-    /// The cumulative length (in bytes) of host output actually fed to
-    /// `onOutput` as of reaching a given, still-retained state number --
-    /// keyed the same way `recentBaselines` retains reference points, and
-    /// pruned in lockstep with it. Together with `furthestRenderedLength`,
-    /// this is what makes a resend anchored on an *older* baseline
-    /// recognize when the content it carries overlaps with content
-    /// already delivered via a *different*, more recently reached
-    /// baseline -- something a purely per-baseline check can't catch (see
-    /// that property's own doc comment for the scenario this closes).
-    /// Seeded with `[0: 0]` -- state 0 is `myAckedStateNum`'s own starting
-    /// value, reached before any instruction has ever been processed, so
-    /// it never goes through the "record this state's cumulative length"
-    /// step every other entry gets.
-    private var cumulativeRenderedLength: [UInt64: Int] = [0: 0]
-    /// The furthest cumulative position (in bytes) rendered so far, from
-    /// *any* accepted instruction, regardless of which baseline it was
-    /// anchored on.
+    /// The oldest state number whose framebuffer is *provably* identical to
+    /// the one `myAckedStateNum` currently reflects, i.e. every step from
+    /// here up to `myAckedStateNum` applied an empty diff (nothing actually
+    /// changed on screen). Together with `myAckedStateNum` this defines the
+    /// range of `old_num` values a diff can safely be anchored on --
+    /// `[equivalentSince, myAckedStateNum]` -- and it's the *only* thing
+    /// that determines whether an incoming diff is safe to apply.
     ///
-    /// A real mosh-server's tick loop can resend "the current diff" -- for
-    /// the *same* baseline, this is the already-covered "successive
-    /// sibling" case (verified against a real mosh-server: a second,
-    /// redundant tick reproduced the exact same 126 bytes of shell output
-    /// already fed from an earlier sibling). But since `HostBytes` is
-    /// literal terminal output bytes, not a structured screen diff (see
-    /// CLAUDE.md's "append-only insight"), a diff "since old_num" is really
-    /// just a suffix of the *same* overall append-only output stream --
-    /// which means a resend anchored on an *older*, still-retained baseline
-    /// (not a sibling of the one that made the most recent progress) can
-    /// validly carry content that overlaps with content already delivered
-    /// via that more recent, differently-anchored baseline. Tracking "what's
-    /// been fed for old_num X" alone (the original fix for the sibling
-    /// case) has no way to know that -- it only ever compares a message
-    /// against its own anchor's history, not against everything actually
-    /// rendered so far. Comparing by *length*, not content, is deliberate:
-    /// different baselines' diffs aren't byte-comparable strings in
-    /// general (their starting points differ), but the cumulative length
-    /// each one implies (`cumulativeRenderedLength[oldNum] + this
-    /// message's content length`) is consistent regardless of which
-    /// message establishes a given state number's position, since it's a
-    /// property of the state numbers themselves, not of any one message.
-    private var furthestRenderedLength = 0
+    /// This exists because a real mosh-server pipelines: it can send
+    /// several successive diffs all anchored on the same `old_num` before
+    /// it's confirmed (via my `ack_num`) that I've caught up to any of
+    /// them, since its own `assumed_receiver_state` only optimistically
+    /// advances once enough time has passed to assume an earlier send
+    /// arrived. Verified against a real mosh-server: a login-banner burst
+    /// produced two successive states anchored on the same initial
+    /// reference -- an empty, content-free ack-only tick, then a second
+    /// one carrying the actual banner text. Validating `old_num` against
+    /// only the single latest `myAckedStateNum` would silently drop that
+    /// second, real-content sibling (its base no longer matches "current"),
+    /// so a still-equivalent older baseline has to stay acceptable too.
+    ///
+    /// Why this can only ever be a range check, never a byte-level merge:
+    /// `HostBytes.hoststring` is **not** a slice of one giant append-only
+    /// output log. Confirmed by reading mosh's own `Complete::diff_from`
+    /// (`src/statesync/completeterminal.cc`): it's computed as
+    /// `display.new_frame(existing_fb, current_fb)`, a genuine
+    /// framebuffer-to-framebuffer diff -- the same differential-redraw
+    /// algorithm mosh uses to draw a terminal efficiently, not literal
+    /// captured PTY bytes. Two diffs computed from the same or different
+    /// reference states are *not* guaranteed to be byte-prefixes of one
+    /// another; they can use different cursor jumps, overwrite different
+    /// cells, or omit lines that didn't change relative to *their own*
+    /// reference even though other diffs re-anchor differently. An earlier
+    /// version of this code tried to reconcile overlapping resends by
+    /// comparing cumulative byte lengths across messages and feeding an
+    /// assumed "new tail" -- against plain linear shell output this
+    /// happened to work (a framebuffer diff for pure scrolling text
+    /// degenerates to look append-only), which is exactly why it passed
+    /// this project's Docker verification. Against a program that redraws
+    /// its own UI with absolute cursor positioning (confirmed with a real
+    /// report: Claude Code's own CLI over Mosh, corrupted/garbled output
+    /// and wrong layout starting immediately at launch, when its UI first
+    /// paints), successive sibling diffs are routinely *not* prefix-related,
+    /// so that length arithmetic fed wrong tails and sometimes sliced
+    /// straight into the middle of an ANSI escape sequence -- corrupting
+    /// output outright, not just duplicating it.
+    ///
+    /// The only diff this transport can ever safely apply is one anchored
+    /// on a state whose framebuffer is known, by this empty-diff chain, to
+    /// be identical to the one currently on screen -- and when it is safe,
+    /// it must be applied *in full*, never sliced. A resend anchored
+    /// *outside* `[equivalentSince, myAckedStateNum]` is dropped whole
+    /// rather than guessed at: whatever content it uniquely carries isn't
+    /// lost for good, since the server's own next regular tick will
+    /// recompute a fresh, correctly-anchored diff once it learns (via ack)
+    /// where this client actually is -- the same self-healing property
+    /// that makes mosh's own retransmission model work at all.
+    private var equivalentSince: UInt64 = 0
     private var highestReceivedSequence: UInt64?
 
     private var heartbeatTimer: DispatchSourceTimer?
@@ -521,14 +530,16 @@ final class MoshTransport: @unchecked Sendable {
         // valid session key.
         serverAckedCount = min(max(serverAckedCount, instruction.ackNum), UInt64(sentEvents.count))
 
-        // Dedup first: a state at or behind where we already are is either
-        // a resend we've fully applied, or superseded by something later
-        // we've already applied instead -- see `recentBaselines`'s doc
-        // comment for why a later state can validly supersede an earlier
-        // sibling built from the same reference.
+        // Dedup/safety check: a state at or behind where we already are is
+        // a resend we've fully applied already. Otherwise, only ever apply
+        // a diff anchored on a state whose framebuffer is provably
+        // identical to what's already on screen -- see `equivalentSince`'s
+        // doc comment for why that's the *only* thing that makes applying
+        // a diff safe, and why anything outside that range is dropped
+        // whole rather than partially applied.
         guard instruction.newNum > myAckedStateNum else { return }
-        guard instruction.oldNum == myAckedStateNum || recentBaselines.contains(instruction.oldNum) else {
-            return // anchored on a reference we've never seen; wait for a resend anchored correctly
+        guard instruction.oldNum >= equivalentSince, instruction.oldNum <= myAckedStateNum else {
+            return // anchored on a framebuffer state we can no longer prove matches the screen
         }
         guard let hostMessage = try? MoshHostMessage.parse(instruction.diff) else { return }
 
@@ -542,39 +553,18 @@ final class MoshTransport: @unchecked Sendable {
             }
         }
 
-        let outputBytes = resolveOutputBytes(for: instruction, content: fullContent)
-
+        // An empty diff means this state's framebuffer is identical to its
+        // reference's, so the equivalence range simply extends to include
+        // it. Real content means the framebuffer just changed -- only the
+        // state we're about to reach is known-equivalent to itself, so the
+        // range collapses to start there.
+        if !fullContent.isEmpty {
+            equivalentSince = instruction.newNum
+        }
         myAckedStateNum = instruction.newNum
-        if !outputBytes.isEmpty {
-            onOutput?(outputBytes)
+        if !fullContent.isEmpty {
+            onOutput?(fullContent)
         }
-    }
-
-    /// Only feeds the part of `instruction`'s content that hasn't already
-    /// been rendered via *any* accepted instruction so far, not just ones
-    /// anchored on this same `old_num` -- see `furthestRenderedLength`'s
-    /// doc comment for why the latter alone isn't enough to catch every way
-    /// a real mosh-server's resends can overlap with content already
-    /// shown. Also retires the oldest tracked baseline once
-    /// `recentBaselines` grows past `maxRetainedBaselines`.
-    private func resolveOutputBytes(for instruction: MoshTransportInstruction, content: [UInt8]) -> [UInt8] {
-        let baseCumulative = cumulativeRenderedLength[instruction.oldNum] ?? furthestRenderedLength
-        let messageCoversUpTo = baseCumulative + content.count
-        let alreadyRenderedWithinThisMessage = max(0, min(furthestRenderedLength - baseCumulative, content.count))
-        let outputBytes = Array(content.dropFirst(alreadyRenderedWithinThisMessage))
-        cumulativeRenderedLength[instruction.newNum] = messageCoversUpTo
-        furthestRenderedLength = max(furthestRenderedLength, messageCoversUpTo)
-
-        recentBaselines.append(myAckedStateNum)
-        if recentBaselines.count > Self.maxRetainedBaselines {
-            let dropped = recentBaselines.prefix(recentBaselines.count - Self.maxRetainedBaselines)
-            recentBaselines.removeFirst(recentBaselines.count - Self.maxRetainedBaselines)
-            for baseline in dropped {
-                cumulativeRenderedLength[baseline] = nil
-            }
-        }
-
-        return outputBytes
     }
 }
 

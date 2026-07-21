@@ -2,6 +2,7 @@ import SwiftUI
 
 struct SettingsView: View {
     @Environment(PurchaseManager.self) private var purchaseManager
+    @Environment(\.colorSchemeContrast) private var colorSchemeContrast
     @AppStorage(AppSettingsKeys.terminalTheme) private var themeRawValue = TerminalTheme.crtGreen.rawValue
     @AppStorage(AppSettingsKeys.autoReconnect) private var autoReconnect = true
     @AppStorage(AppSettingsKeys.verboseConnecting) private var verboseConnecting = true
@@ -27,15 +28,23 @@ struct SettingsView: View {
                         }
                     }
                 }
-                Section("Terminal Theme") {
+                Section {
                     Picker(selection: $themeRawValue) {
                         ForEach(TerminalTheme.allCases, id: \.rawValue) { theme in
-                            Text(theme.displayName).tag(theme.rawValue)
+                            Text(theme.displayName)
+                                .tag(theme.rawValue)
+                                .disabled(colorSchemeContrast == .increased && theme != .highContrast)
                         }
                     } label: {
                         EmptyView()
                     }
                     .pickerStyle(.inline)
+                } header: {
+                    Text("Terminal Theme")
+                } footer: {
+                    if colorSchemeContrast == .increased {
+                        Text("Increase Contrast is on in Accessibility settings, so the terminal always uses High Contrast. Turn it off in Settings > Accessibility > Display & Text Size to choose a different theme here.")
+                    }
                 }
                 Section {
                     Toggle("Auto-Reconnect", isOn: $autoReconnect)

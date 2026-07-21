@@ -394,9 +394,10 @@ final class SSHConnection: Identifiable, Hashable, @unchecked Sendable {
             // to first. If SSH wins, it goes live immediately; if Mosh then
             // confirms shortly after, the session upgrades to Mosh
             // mid-stream instead of never having had the chance to.
+            let moshUpgradeEnabled = UserDefaults.standard.autoUpgradeToMoshEnabled
             let handoff = HandoffOutcome()
             let moshTask = Task<Void, Never> {
-                guard UserDefaults.standard.autoUpgradeToMoshEnabled else { return }
+                guard moshUpgradeEnabled else { return }
                 _ = await self.attemptMoshUpgrade(client: client, handoff: handoff, host: host, network: network)
             }
 
@@ -409,7 +410,11 @@ final class SSHConnection: Identifiable, Hashable, @unchecked Sendable {
                 terminalPixelHeight: 0,
                 terminalModes: SSHTerminalModes([:])
             )
-            await emitDiagnostic("debug1: Requesting pty (xterm-256color, \(Self.defaultTerminalSize.cols)x\(Self.defaultTerminalSize.rows)) alongside the Mosh attempt.")
+            if moshUpgradeEnabled {
+                await emitDiagnostic("debug1: Requesting pty (xterm-256color, \(Self.defaultTerminalSize.cols)x\(Self.defaultTerminalSize.rows)) alongside the Mosh attempt.")
+            } else {
+                await emitDiagnostic("debug1: Requesting pty (xterm-256color, \(Self.defaultTerminalSize.cols)x\(Self.defaultTerminalSize.rows)).")
+            }
 
             do {
                 try await client.withPTY(ptyRequest) { inbound, outbound in

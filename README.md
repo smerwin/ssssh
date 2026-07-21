@@ -61,10 +61,10 @@ MIT-licensed; their required notices are preserved in [NOTICE.md](NOTICE.md).
 - iOS 17 / iPadOS 17+, SwiftUI, Swift 6 language mode.
 - iPhone and iPad in one universal target. No Mac Catalyst, no watch/TV
   targets.
-- Keyboard accessory row (Esc/Tab/Ctrl/arrows/function keys) comes from
-  SwiftTerm's built-in `TerminalAccessory`, not custom-built — it was
-  already exactly what the spec asked for, so there was no reason to
-  reinvent it.
+- Keyboard accessory row (Esc/Tab/Ctrl/arrows/function keys) is SwiftTerm's
+  built-in `TerminalAccessory`, wrapped in a thin custom view
+  (`TerminalAccessoryView`) to add a Shift+Tab button and fix the on-screen
+  Ctrl key not combining with iOS keyboard input — see CLAUDE.md.
 
 ## Core features
 
@@ -121,60 +121,34 @@ MIT-licensed; their required notices are preserved in [NOTICE.md](NOTICE.md).
   reconnects any dropped session when the app returns to the foreground
   (`scenePhase` -> `.active`) regardless of the Auto-Reconnect setting below
   -- the user foregrounding the app is itself a signal they want back in.
-- **Backgrounding keeps sessions alive for up to five minutes**: while the
-  app is backgrounded (including the screen simply locking), every
-  connected session gets a harmless keepalive nudge every 20 seconds, using
-  iOS's limited background-execution allowance, so a connection has a
-  chance to survive that long instead of going stale the moment the screen
-  turns off. Past that five-minute cap, or if it drops anyway, the
-  reconnect-on-foreground behavior above (or Auto-Reconnect below) picks it
-  back up.
-- **Auto-Reconnect** (Settings, on by default): when a session drops
-  unexpectedly (network blip, remote hangup, auth failure) while the app is
-  already in the foreground, it's automatically reconnected with
-  exponential backoff (1s, 2s, 4s, ... capped at 30s, reset after a
-  successful connect) if this is on; if it's off, the dropped session is
-  torn down and removed from the Sessions list instead of lingering in a
-  disconnected state. There's no hard retry *limit* -- a persistently
-  broken host (revoked key, permanently unreachable) will keep retrying
-  forever, just slowly, rather than eventually giving up. Never fires for
-  a *clean* end to the shell (typing `exit`/`logout`, or Ctrl+D) --
-  reconnecting the instant someone deliberately logs out would be exactly
-  the wrong behavior.
+- **Backgrounding keeps sessions alive for up to five minutes**: while
+  backgrounded (including the screen just locking), every connected
+  session gets a keepalive nudge every 20 seconds, using iOS's limited
+  background-execution allowance. Past that cap, or if it drops anyway,
+  reconnect-on-foreground or Auto-Reconnect picks it back up.
+- **Auto-Reconnect** (Settings, on by default): reconnects a session that
+  drops unexpectedly while the app is foregrounded, with exponential
+  backoff (1s up to 30s, no retry limit). Off, a dropped session is torn
+  down instead. Never fires for a clean shell exit (`exit`/`logout`/Ctrl+D).
 - **Verbose Connecting** (Settings, on by default): narrates each
-  connection lifecycle step (connecting, authenticating, requesting a
-  pty) as `debug1:`-style lines in the terminal itself while a session
-  connects, similar to `ssh -v`. Citadel/NIOSSH don't log the actual
-  handshake internals (key exchange, algorithm negotiation) at all, so
-  this can't show true protocol-level detail -- it narrates the lifecycle
-  steps the app itself controls, not a tap into lower-level logging.
-- **Auto-Upgrade to Mosh** (Settings, off by default): after authenticating,
-  checks whether the remote host has [Mosh](https://mosh.org/) installed by
-  running `mosh-server new` over the same SSH connection, at the same time
-  a plain SSH shell is being requested -- whichever one actually confirms
-  first is the one that goes live, so checking for Mosh never adds delay
-  to a normal SSH connection. Confirming Mosh means proof its UDP path
-  actually works end to end, not just that `mosh-server` started
-  (`mosh-server` never speaks first, so silence for 2 seconds usually means
-  a firewall is blocking UDP); once confirmed, the SSH connection is closed
-  and the rest of the session -- keystrokes, terminal output, resizing --
-  runs over Mosh instead. Every step is reported as a `debug1:`-style line
-  when Verbose Connecting is also on: detection, the upgrade attempt,
-  confirmation or the UDP timeout, and any error a live Mosh session hits
-  later (which drops the session the same way an SSH drop does, so
-  Auto-Reconnect can retry it). If Mosh isn't installed, or its UDP path is
-  unreachable, the session just continues over SSH as if the toggle were
-  off, with no added delay from having tried.
-- **Predictive local echo and roaming**, once a session is running over
-  Mosh: typed characters render instantly, underlined, before the
-  server's own echo confirms them -- mosh's signature responsiveness
-  feature, verified against a real terminal emulator to render correctly
-  and reconcile without duplicating anything once the real echo arrives.
-  A session also survives its local network interruption or changing out
-  from under it (confirmed against a real `mosh-server` through an
-  induced ~15-second network blackout) without needing to reconnect over
-  SSH -- the same encrypted session just keeps going once a path is
-  available again.
+  connection step (connecting, authenticating, requesting a pty) as
+  `debug1:`-style lines, similar to `ssh -v` -- app-level lifecycle
+  narration, not a tap into Citadel/NIOSSH's own handshake internals,
+  which aren't logged at that level of detail.
+- **Auto-Upgrade to Mosh** (Settings, off by default): after
+  authenticating, checks whether the remote host has
+  [Mosh](https://mosh.org/) installed, racing it against the plain SSH
+  shell so checking never adds delay. Confirms the actual UDP path works
+  end to end, not just that `mosh-server` started, before switching the
+  live session over; falls back to plain SSH with no added delay if Mosh
+  isn't installed or its UDP path is unreachable.
+- **Predictive local echo and roaming**, once running over Mosh: typed
+  characters render instantly, underlined, ahead of the server's own
+  echo -- mosh's signature responsiveness feature. A session also
+  survives a local network interruption or change without reconnecting
+  over SSH (verified against a real `mosh-server` through an induced
+  ~15-second blackout). See CLAUDE.md's Mosh section for the full
+  implementation story, including known simplifications.
 
 ### 4. Hosts and connections
 
@@ -214,31 +188,18 @@ worth knowing before relying on them:
   Key, file-picker only -- no paste). See CLAUDE.md for why RSA/ECDSA
   import isn't a small addition.
 - **No rectangular text selection** in the terminal.
-- **Predictive local echo is deliberately simplified, not frame-based
-  like real mosh, and backs off automatically against programs it
-  doesn't work well with.** `MoshPredictionEngine` (`Sources/Mosh/`)
-  predicts by drawing an underlined preview character and moving the
-  cursor back, rather than maintaining mosh's own mirrored terminal
-  framebuffer with epoch/glitch tracking. Raw-mode, self-redrawing
-  programs (confirmed with Claude Code's own CLI running over a Mosh
-  session) don't echo keystrokes sequentially, so most predictions
-  against them get abandoned rather than confirmed -- any abandoned
-  prediction is now explicitly erased rather than left on screen, and
-  after a few genuine mismatches in a row this engine stops predicting
-  entirely for the rest of that session rather than continuing to
-  flicker against a program it's already shown it can't keep up with.
-  See `MoshPredictionEngine`'s doc comment for the full reasoning.
-- **Roaming's local-network-change detection is real but only
-  partially provable in development.** `MoshTransport` recovers from an
-  actual, induced network blackout (verified against a real
-  `mosh-server`, blocking and restoring UDP traffic for ~15 seconds) and
-  from `NWPathMonitor`-reported local path changes -- but a genuine
-  Wi-Fi-to-cellular handoff on a physical device hasn't been exercised,
-  only reasoned through and code-reviewed.
+- **Predictive local echo is deliberately simplified**, not frame-based
+  like real mosh, and backs off automatically against raw-mode,
+  self-redrawing programs it can't keep up with (confirmed with Claude
+  Code's own CLI). See `MoshPredictionEngine`'s doc comment, or
+  CLAUDE.md's Mosh section, for the full reasoning.
+- **Roaming's local-network-change detection is real but only partially
+  provable in development.** Verified against an induced ~15-second UDP
+  blackout and `NWPathMonitor` path changes; a genuine Wi-Fi-to-cellular
+  handoff on a physical device hasn't been exercised.
 - `MoshTransport` also intentionally simplifies a few things real mosh
   does adaptively (no send pipelining, no SRTT-based retransmission
-  timing) -- see its doc comment for specifics, and CLAUDE.md's Mosh
-  section for the full picture.
+  timing) -- see CLAUDE.md's Mosh section for the full picture.
 
 ## Building locally
 
@@ -264,19 +225,11 @@ xcodegen generate
 git add ssssh.xcodeproj   # the regenerated project IS committed -- see below
 ```
 
-Two things worth knowing before touching the project setup:
-
-- **`ssssh.xcodeproj` is checked into git** (only `xcuserdata` inside it is
-  ignored), unlike XcodeGen's usual recommendation to gitignore it. This is
-  required for Xcode Cloud, which needs a real project file present in the
-  repo to discover a workflow at all -- if it's missing, Cloud fails with
-  "Project ssssh.xcodeproj does not exist at the root of the repository."
-- **XcodeGen 2.45.4's top-level `resources:` target key silently produces no
-  Resources build phase** on this project (a real, confirmed bug, not a
-  config mistake) -- the app icon and accent color are wired in via a
-  `sources` entry with an explicit `buildPhase: resources` override instead.
-  Don't switch this back to a plain `resources:` list without re-verifying
-  the built app actually contains `Assets.car` and `CFBundleIconName`.
+**`ssssh.xcodeproj` is checked into git** (only `xcuserdata` inside it is
+ignored), unlike XcodeGen's usual recommendation -- Xcode Cloud needs a real
+project file present at the repo root to discover a workflow at all. See
+CLAUDE.md for this and other project-setup gotchas (e.g. a confirmed
+XcodeGen bug around the top-level `resources:` key) before touching it.
 
 ## Architecture
 

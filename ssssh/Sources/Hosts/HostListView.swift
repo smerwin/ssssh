@@ -14,6 +14,7 @@ struct HostListView: View {
     @State private var deleteErrorMessage: String?
     @State private var hostPendingForgetKey: SSHHost?
     @State private var pendingNewSession: SSHConnection?
+    @State private var activeSession: SSHConnection?
 
     var body: some View {
         NavigationStack {
@@ -28,14 +29,39 @@ struct HostListView: View {
                     }
                 }
                 ForEach(hostStore.hosts) { host in
-                    NavigationLink(value: host) {
-                        VStack(alignment: .leading) {
-                            Text(host.nickname).font(.headline)
-                            Text("\(host.username)@\(host.hostname):\(host.port)")
-                                .font(.subheadline)
-                                .foregroundStyle(.secondary)
+                    // Not a `NavigationLink(value: host)` -- that would need
+                    // `navigationDestination(for: SSHHost.self)` to resolve
+                    // `sessionManager.session(for: host)` inside its
+                    // closure, and that closure re-runs on every re-render
+                    // Observation triggers for anything it read, not only
+                    // on an actual tap. Since `session(for:)` can create and
+                    // connect a brand-new session as a side effect, that
+                    // silently reconnected a host whose session had just
+                    // been closed elsewhere (e.g. swiping it away in the
+                    // Sessions tab), because this tab's own pushed
+                    // destination for the same host was still re-evaluating
+                    // in the background. Resolving the session once, here,
+                    // only in direct response to a tap, keeps that lookup
+                    // out of the render path entirely.
+                    Button {
+                        activeSession = sessionManager.session(for: host)
+                    } label: {
+                        HStack {
+                            VStack(alignment: .leading) {
+                                Text(host.nickname).font(.headline)
+                                Text("\(host.username)@\(host.hostname):\(host.port)")
+                                    .font(.subheadline)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            Image(systemName: "chevron.right")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(.tertiary)
                         }
+                        .contentShape(Rectangle())
                     }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.primary)
                     .swipeActions(edge: .trailing) {
                         Button(role: .destructive) {
                             hostPendingDeletion = host
@@ -86,8 +112,8 @@ struct HostListView: View {
                 }
             }
             .navigationTitle("Hosts")
-            .navigationDestination(for: SSHHost.self) { host in
-                TerminalSessionView(connection: sessionManager.session(for: host))
+            .navigationDestination(item: $activeSession) { session in
+                TerminalSessionView(connection: session)
             }
             .navigationDestination(item: $pendingNewSession) { session in
                 TerminalSessionView(connection: session)

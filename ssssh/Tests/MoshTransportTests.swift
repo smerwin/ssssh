@@ -89,20 +89,23 @@ struct MoshTransportTests {
         return session.encrypt(direction: .toClient, sequence: sequence, timestamp: 0, timestampReply: 0, payload: fragments[0].serialize())
     }
 
-    /// Regression test for a real gap in the original same-baseline-only
-    /// sibling fix: `HostBytes` is literal terminal output bytes (see
-    /// CLAUDE.md's "append-only insight"), so a diff "since old_num" is
-    /// really just a suffix of the *same* overall append-only output
-    /// stream -- meaning a resend anchored on an *older*, still-retained
-    /// baseline can validly carry content that overlaps with content
-    /// already delivered via a *different*, more recently reached
-    /// baseline, exactly the way a real mosh-server's pipelining can
-    /// produce. Tracking "what's been fed for old_num X" alone (the
-    /// original fix, for same-baseline siblings only) has no way to
-    /// detect that cross-baseline overlap and re-renders the middle
-    /// section a second time.
-    @Test("A late resend anchored on an older, still-retained baseline doesn't re-feed content already delivered via a newer baseline")
-    func crossBaselineResendDoesNotDuplicateContent() throws {
+    /// Regression test for the actual bug: `HostBytes` is a real
+    /// framebuffer-to-framebuffer diff (confirmed by reading mosh's own
+    /// `Complete::diff_from`, see `equivalentSince`'s doc comment on
+    /// `MoshTransport`), not a slice of one giant append-only output log.
+    /// A previous version of this code tried to reconcile a resend
+    /// anchored on an older, still-retained baseline by comparing
+    /// cumulative byte *lengths* across messages and feeding the assumed
+    /// "new tail" -- which happened to reconstruct the right answer for
+    /// this exact append-only-shaped fixture, but corrupted real output
+    /// against any program whose diffs aren't simple prefix extensions of
+    /// each other (confirmed in production against Claude Code's CLI over
+    /// Mosh). The sound behavior is to drop a resend anchored outside the
+    /// range of states provably identical to the current screen, not to
+    /// guess at how it overlaps -- so already-delivered content must stay
+    /// exactly as delivered, with nothing appended from the dropped resend.
+    @Test("A late resend anchored on a since-diverged baseline is dropped, not merged into already-delivered content")
+    func staleBaselineResendIsDroppedNotMerged() throws {
         let key = MoshSessionKey.generateRandomForTesting()
         let transport = MoshTransport(host: "127.0.0.1", port: 60001, sessionKey: key)
         let serverSession = MoshSession(key: key)
@@ -114,21 +117,22 @@ struct MoshTransportTests {
         transport.handleIncoming(try hostDatagram(session: serverSession, sequence: 0, oldNum: 0, newNum: 5, hostBytes: Array("ABCDE".utf8)))
         // Real forward progress via a *different*, more recent anchor, 5 -> 10.
         transport.handleIncoming(try hostDatagram(session: serverSession, sequence: 1, oldNum: 5, newNum: 10, hostBytes: Array("FGHIJ".utf8)))
-        // A late resend, still anchored on the *original* baseline 0 (still
-        // within the retained window), recomputed fresh to now cover all
-        // the way to 12 -- exactly what a real mosh-server's
-        // assumed_receiver_state pipelining can produce.
+        // A late resend, still anchored on the *original* baseline 0 -- no
+        // longer provably the current screen's framebuffer, since a real
+        // (non-empty) diff was already applied on top of it. Must be
+        // dropped whole, not partially merged.
         transport.handleIncoming(try hostDatagram(session: serverSession, sequence: 2, oldNum: 0, newNum: 12, hostBytes: Array("ABCDEFGHIJKL".utf8)))
 
-        #expect(String(decoding: fed, as: UTF8.self) == "ABCDEFGHIJKL")
+        #expect(String(decoding: fed, as: UTF8.self) == "ABCDEFGHIJ")
     }
 
-    /// The original bug this dedup logic was built for: a same-baseline
-    /// sibling resent under a fresh `new_num` with identical or extended
-    /// content must still only feed its new tail, not the whole thing
-    /// again.
-    @Test("A same-baseline sibling with extended content only feeds its new tail")
-    func sameBaselineSiblingOnlyFeedsNewTail() throws {
+    /// A same-baseline sibling resent under a fresh `new_num`, whether
+    /// byte-identical or carrying different content, is likewise dropped
+    /// once the baseline it's anchored on is no longer provably the
+    /// current screen -- see `staleBaselineResendIsDroppedNotMerged`.
+    /// Nothing about the *original* content already fed should change.
+    @Test("A same-baseline sibling after real content was already applied is dropped, not re-fed or merged")
+    func sameBaselineSiblingAfterRealContentIsDropped() throws {
         let key = MoshSessionKey.generateRandomForTesting()
         let transport = MoshTransport(host: "127.0.0.1", port: 60001, sessionKey: key)
         let serverSession = MoshSession(key: key)
@@ -139,9 +143,35 @@ struct MoshTransportTests {
         transport.handleIncoming(try hostDatagram(session: serverSession, sequence: 0, oldNum: 0, newNum: 5, hostBytes: Array("ABCDE".utf8)))
         // A redundant tick resending the identical diff under a fresh new_num.
         transport.handleIncoming(try hostDatagram(session: serverSession, sequence: 1, oldNum: 0, newNum: 6, hostBytes: Array("ABCDE".utf8)))
-        // A sibling extending further.
+        // A sibling carrying different content, still anchored on the same stale baseline.
         transport.handleIncoming(try hostDatagram(session: serverSession, sequence: 2, oldNum: 0, newNum: 8, hostBytes: Array("ABCDEFG".utf8)))
 
-        #expect(String(decoding: fed, as: UTF8.self) == "ABCDEFG")
+        #expect(String(decoding: fed, as: UTF8.self) == "ABCDE")
+    }
+
+    /// Regression test for the original bug this dedup logic was first
+    /// built for: a real mosh-server pipelines, so a content-free
+    /// (empty-diff) tick and a real-content tick can both arrive anchored
+    /// on the *same* reference before either is acked. Since the empty
+    /// tick's framebuffer is identical to its reference's, that reference
+    /// must stay valid for the real-content sibling that follows it --
+    /// dropping it would silently lose genuine output (confirmed against a
+    /// real mosh-server: exactly this shape for a login-banner burst).
+    @Test("A real-content sibling following an empty sibling on the same baseline is still applied in full")
+    func realContentSiblingAfterEmptySiblingIsApplied() throws {
+        let key = MoshSessionKey.generateRandomForTesting()
+        let transport = MoshTransport(host: "127.0.0.1", port: 60001, sessionKey: key)
+        let serverSession = MoshSession(key: key)
+
+        var fed: [UInt8] = []
+        transport.onOutput = { fed.append(contentsOf: $0) }
+
+        // Content-free tick: framebuffer at state 1 is identical to state 0's.
+        transport.handleIncoming(try hostDatagram(session: serverSession, sequence: 0, oldNum: 0, newNum: 1, hostBytes: []))
+        // Real content, still anchored on the original reference (0), which
+        // is still provably equivalent to the current screen (state 1).
+        transport.handleIncoming(try hostDatagram(session: serverSession, sequence: 1, oldNum: 0, newNum: 2, hostBytes: Array("banner".utf8)))
+
+        #expect(String(decoding: fed, as: UTF8.self) == "banner")
     }
 }

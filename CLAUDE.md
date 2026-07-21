@@ -238,6 +238,80 @@ here's the actual constraint, for whoever picks this up next:
   between those two, not by looking for a third way around Citadel --
   there wasn't one as of Citadel 0.7.x.
 
+## Apple Shortcuts support (not started -- investigation notes)
+
+Nobody has written any code for this yet. This is a scoping writeup from
+a planning conversation, kept here so a future session doesn't have to
+re-derive it -- treat it as a starting point, not a finished design.
+
+The mechanism is the **App Intents** framework. It doesn't need a
+separate extension target -- `deploymentTarget.iOS` is already `17.0` in
+`project.yml`, and App Intents can be declared directly in the `ssssh`
+app target, exposed to Shortcuts/Siri via an `AppShortcutsProvider`.
+
+### What would need to be built
+
+1. An `AppEntity` wrapping `SSHHost` (`Sources/Models/SSHHost.swift`),
+   with an `EntityQuery` backed by `HostStore`
+   (`Sources/Hosts/HostStore.swift`), so a Shortcut can pick "Connect to
+   `<nickname>`" from a parameter picker instead of typing a hostname.
+2. A **"Run Command"** `AppIntent`: host + command string in, output
+   text out. This should reuse the existing one-shot Citadel pattern
+   from `SSHCopyID.swift` and `MoshBootstrap.swift`
+   (`SSHClient.connect(...)` -> `executeCommand`/`executeCommandStream`),
+   *not* the full `SSHConnection` state machine -- there's no live
+   terminal UI involved, just connect, run one command, capture output,
+   disconnect. This is the intent that's actually useful for Shortcuts:
+   piping output into notifications, other automations, etc.
+3. A **"Connect"** `AppIntent` that opens the app and calls
+   `SessionManager.session(for:)` (`Sources/SSH/SessionManager.swift`)
+   for a given host -- a Shortcuts-triggerable deep link into a live
+   terminal. This one has to run in the foreground
+   (`openAppWhenRun = true`) since it's opening an interactive session,
+   not returning a value.
+4. An `AppShortcutsProvider` with phrases ("Run <command> on <host> in
+   ssssh") so these surface in the Shortcuts app and Siri without the
+   user having to build anything by hand first.
+
+### Open questions / friction points specific to this codebase
+
+- **Face ID/Keychain gating.** Private key material lives behind
+  `KeyStore` (`Sources/Keys/KeyStore.swift`), which is Face ID-gated.
+  A "Run Command" intent triggered from an unattended automation (not
+  tapped by the user in the moment) will hit that biometric prompt
+  out-of-process -- **untested** whether `LAContext` auth actually
+  surfaces correctly from an App Intent's `perform()` when the app isn't
+  foregrounded, or whether "Run Command" also needs
+  `openAppWhenRun = true` after all, which would defeat the "runs
+  silently from an automation" use case that makes it worth building.
+  Verify this early -- it's the one finding here that could change the
+  whole design, not just an implementation detail.
+- **Actor isolation.** `SSHConnection`/`SessionManager` are `@MainActor`
+  (see "Concurrency architecture" above), but "Run Command" doesn't want
+  that machinery at all -- it should talk to Citadel directly the way
+  `SSHCopyID` does, off the main actor, same as those existing one-shot
+  callers.
+- **Host-key trust.** `HostKeyStore` (`Sources/Hosts/HostKeyStore.swift`
+  per the concurrency-architecture section above) currently confirms
+  unrecognized hosts via a UI sheet
+  (`HostKeyConfirmationView`/`sssshApp.swift`). A background "Run
+  Command" intent hitting a host with no stored, trusted key has nowhere
+  to show that sheet -- it should fail with a clear error ("connect from
+  the app once first to trust this host's key") rather than trying to
+  present UI out of context, and definitely should not silently
+  auto-trust.
+
+### Recommended scope for a first pass
+
+Build **"Run Command" only** first. It reuses existing one-shot
+connection code, doesn't touch the live-terminal UI at all, and is the
+actual Shortcuts use case people ask for ("turn off my server", "check
+disk space", piped into a notification). Add "Connect"/open-terminal as
+a separate second pass once "Run Command" is proven out end-to-end
+(especially the Face ID question above) -- building both, plus
+host-key/Face ID handling, in one pass is more scope than a first PR
+here should take on.
+
 ## Concurrency architecture (why the SSH code looks the way it does)
 
 `SSHConnection` and `HostKeyStore` are `@MainActor @Observable` for UI
@@ -383,25 +457,47 @@ simplifications you could "clean up," and most of them are load-bearing.
   which affect wire compatibility, only efficiency/robustness under loss
   or high latency.
 
-### The append-only insight that made the client side tractable
+### Why the client doesn't model the terminal -- and what that costs
 
 Mosh's actual "instant diff" complexity -- the terminal-frame-aware state
 sync that's most of the upstream C++ client's real difficulty -- lives
-entirely in `mosh-server`'s own `Terminal::Complete`/`completeterminal.cc`,
-which this app never needs to reimplement. Confirmed by reading mosh's own
-`src/statesync/user.cc`: `UserStream` (the client's outgoing keystroke/resize
-state) is a plain append-only deque, and `HostBytes.hoststring` (the
-server's outgoing diff payload) is literal terminal output bytes, not a
-structured screen diff. That means `MoshTransport` can feed `hostbytes`
-straight into a terminal view exactly like `SSHConnection.onOutput`
-already does, with no parallel terminal model to maintain on the client
-side -- confirmed by the real Docker session above rendering correctly.
+entirely in `mosh-server`'s own `Terminal::Complete`/`completeterminal.cc`.
+This app doesn't reimplement that: `MoshTransport` feeds an accepted
+instruction's `hostbytes` straight into a terminal view exactly like
+`SSHConnection.onOutput` already does, with no parallel terminal model to
+maintain on the client side.
 
-This isn't quite the whole story, though -- see the next section. "Literal
-bytes, no structured diff" is true of any *one* instruction's payload, but
-it doesn't mean every accepted instruction's payload is safe to feed
-verbatim: the real server can (and does) send more than one instruction
-whose payload describes the *same* underlying content.
+**This section used to claim more than that, and the extra claim was
+wrong.** It said `HostBytes.hoststring` was "literal terminal output
+bytes, not a structured screen diff," supposedly confirmed by reading
+mosh's own `src/statesync/user.cc`. What that file actually confirms is
+narrower: `UserStream` (the *client's* outgoing keystroke/resize state) is
+a plain append-only deque -- true, and why `MoshTransport.sentEvents` is a
+plain growing array. The *host* stream is a different animal. Reading
+`Complete::diff_from` (`src/statesync/completeterminal.cc`) directly shows:
+
+```cpp
+string update = display.new_frame( true, existing.get_fb(), terminal.get_fb() );
+```
+
+`hoststring` is the output of a genuine framebuffer-to-framebuffer diff --
+the same differential-redraw algorithm mosh uses to draw a terminal
+efficiently -- computed fresh between whichever two `Complete` states are
+being compared. It is **not** a slice of one big append-only output log,
+and two diffs anchored on the same or different reference states are
+**not** guaranteed to be byte-prefixes of one another: they can use
+different cursor jumps, overwrite different cells, or otherwise diverge
+in shape depending on exactly which two framebuffers they're bridging.
+
+For plain linear shell output (nothing before the cursor ever changes, no
+full-screen redraws) a framebuffer diff happens to *look* append-only --
+which is exactly why the wrong assumption went unnoticed through this
+project's own Docker verification (a login banner, `echo` commands). See
+"A real bug this surfaced, worth not reintroducing" and "A second real
+bug" below for the two dropped/duplicated-content bugs the wrong model
+first prompted fixes for, and the further bug below that for what
+believing the model to be literally true eventually broke once a real
+full-screen-redrawing program (Claude Code's own CLI) was run over Mosh.
 
 ### A real bug this surfaced, worth not reintroducing
 
@@ -415,42 +511,95 @@ output right after connecting produced two sibling states both anchored
 on the same reference (`old_num=1`) -- one with an empty diff, one
 carrying the actual login banner and prompt. Once the client accepted the
 empty sibling and advanced past `old_num=1`, the real content's sibling
-was permanently rejected as "already past this reference." The fix,
-`MoshTransport.recentBaselines`, retains a small bounded window of
-recently-superseded reference numbers as still-valid `old_num` anchors,
-rather than only the single latest. If you ever "simplify" the receiver
-back to single-position tracking, expect exactly this failure mode:
-sessions that connect but the initial prompt or a burst of output goes
-missing, non-deterministically, depending on timing.
+was permanently rejected as "already past this reference." The fix
+retained a small window of recently-superseded reference numbers as
+still-valid `old_num` anchors, rather than only the single latest -- see
+`MoshTransport.equivalentSince`, which now implements this (a later fix,
+below, replaced the original bounded-array implementation of this idea
+with something sounder, but the underlying need -- an empty-diff sibling
+must keep its reference valid for the real-content sibling that follows
+it -- is exactly the same). If you ever "simplify" the receiver back to
+single-position tracking, expect exactly this failure mode: sessions that
+connect but the initial prompt or a burst of output goes missing,
+non-deterministically, depending on timing.
 
 ### A second real bug this surfaced: identical siblings duplicate output
 
-The `recentBaselines` fix above (accepting siblings, not just the single
-latest position) fixed content being *dropped*, but uncovered a second,
-opposite bug once a real interactive command was sent over a wired-up
-session: content getting *duplicated*. Verified against a real
-`mosh-server`: its tick loop can resend "the current diff" under a fresh
-`new_num` even when nothing new has happened server-side (it doesn't
-wait for an ack before ticking again), and since that diff is computed
-fresh each tick from the same still-unacknowledged reference, two
+Accepting siblings (the fix above) fixed content being *dropped*, but
+uncovered a second, opposite bug once a real interactive command was sent
+over a wired-up session: content getting *duplicated*. Verified against a
+real `mosh-server`: its tick loop can resend "the current diff" under a
+fresh `new_num` even when nothing new has happened server-side (it
+doesn't wait for an ack before ticking again), and since that diff is
+computed fresh each tick from the same still-unacknowledged reference, two
 successive ticks can carry byte-for-byte *identical* `hostbytes` content
-under two different, both-valid `new_num`s. `recentBaselines` alone
-correctly accepts both (they're both real, both anchored on a baseline
-the client has genuinely seen) -- but naively feeding each accepted
-instruction's `hostbytes` straight to the terminal, as the "append-only"
-section above suggested was sufficient, then renders that identical
-content twice (observed directly: a test command's echoed output and
-prompt appeared twice in the live terminal).
+under two different, both-valid `new_num`s. Accepting both siblings is
+correct (they're both real, both anchored on a baseline the client has
+genuinely seen) -- but naively feeding each accepted instruction's
+`hostbytes` straight to the terminal renders that identical content twice
+(observed directly: a test command's echoed output and prompt appeared
+twice in the live terminal).
 
-The fix, `MoshTransport.contentFedForBaseline`, tracks what's already
-been fed for each retained baseline (`old_num`) and only feeds the part
-of a newly-accepted instruction's content that extends *beyond* what was
-already fed from that same baseline -- an identical resend then feeds
-nothing further, and a genuinely longer sibling only feeds its new tail.
-If you ever "simplify" this back to "just feed every accepted
-instruction's hostbytes," expect exactly this failure mode: commands and
-their output visibly repeating in the terminal, depending on server
-timing you don't control.
+The original fix here tracked what had already been fed for each retained
+baseline and only fed the part of a newly-accepted instruction's content
+that extended *beyond* what was already fed from that same baseline --
+correct for this exact scenario (two siblings sharing one reference), but
+built on the same "hostbytes is one append-only stream" assumption this
+section now says is false in general. See the further bug below for where
+that assumption stopped being merely imprecise and started actively
+corrupting output, and for the sounder replacement.
+
+### A further real bug in this dedup logic: cross-baseline resends were merged by byte length, corrupting real-world output
+
+Once "hostbytes" is understood correctly (a framebuffer diff, not an
+append-only log slice -- see "Why the client doesn't model the terminal"
+above), the two fixes above generalize unsoundly. Both compared
+*cumulative byte length* across messages -- "this many bytes of this
+message are already rendered, feed only the tail" -- to decide how a
+resend anchored on an older, still-retained baseline overlapped with
+content already delivered via a different, more recent baseline. That's
+only a valid way to find "the new part" when successive diffs really are
+byte-prefix extensions of one another, which is true of plain scrolling
+shell text (a diff for pure appended text degenerates into looking like
+an append-only slice) but not true in general.
+
+**Confirmed in production**: running Claude Code's own CLI (`claude`)
+over a Mosh session produced garbled/corrupted text and colors, wrong
+layout, and visible flicker starting immediately when its UI first
+painted -- not the already-fixed predictive-echo artifact (stray
+underlines, see `MoshPredictionEngine` below), a different failure in the
+*host*-stream dedup path. Claude Code redraws its own UI box with
+absolute cursor positioning constantly (spinner, streaming tokens,
+resize), so successive sibling diffs routinely are *not* prefix-related
+to each other. The length-based logic would then either silently drop
+real content it mistook for already-shown (lengths lined up, content
+didn't), or slice into the middle of an ANSI escape sequence and feed the
+truncated remainder straight into SwiftTerm -- corrupting output outright,
+not just duplicating it.
+
+The fix replaces byte-length bookkeeping with `MoshTransport.equivalentSince`:
+the oldest state number whose framebuffer is *provably* identical to the
+current one, because every step from there to `myAckedStateNum` applied an
+empty diff. A diff is only ever safe to apply when its `old_num` falls in
+`[equivalentSince, myAckedStateNum]` -- and when it is safe, it's applied
+**in full**, never sliced. Anything anchored outside that range is dropped
+whole rather than guessed at. This still correctly handles the original
+empty-sibling-then-real-sibling case (the range extends across empty
+diffs), still dedupes true duplicate resends (a resend anchored back
+inside the range that's already been superseded is simply out of range and
+dropped, same as any other), and never again slices into an escape
+sequence's interior. The tradeoff, made deliberately: a resend anchored
+*outside* the safe range is dropped even if it uniquely carries new
+content (e.g. two genuinely different, both-real diffs pipelined off the
+same now-stale reference) -- rather than guess at how to merge it. This
+isn't a permanent loss: the server's own next regular tick recomputes a
+fresh diff anchored on wherever the client actually acked, redelivering
+the same content correctly-based, the same self-healing property that
+makes mosh's retransmission model work at all. If you ever reintroduce
+any cross-message byte-length arithmetic here, expect exactly this
+failure mode back: a redraw-heavy program (a TUI, a fancy prompt, another
+CLI agent) rendering garbled text, wrong colors, or corrupted layout over
+Mosh, starting as soon as it paints its first full screen.
 
 ### Predictive local echo (`MoshPredictionEngine`)
 
@@ -459,8 +608,8 @@ maintains its own full mirrored terminal framebuffer and overlays
 predicted cells onto it with epoch tracking, glitch detection, and
 SRTT-adaptive show/hide -- because it needs to reconcile predictions
 against a real terminal-frame model it already maintains for other
-reasons. This app deliberately has no such parallel model (see "The
-append-only insight" above), so `MoshPredictionEngine` takes a completely
+reasons. This app deliberately has no such parallel model (see "Why the
+client doesn't model the terminal" above), so `MoshPredictionEngine` takes a completely
 different approach: it predicts by drawing an underlined preview
 character and then moving the cursor *back* to exactly where it started
 (`\x1b[4m<char>\x1b[24m` followed by a relative cursor-left move), so the
@@ -772,6 +921,17 @@ If you touch any of these three, re-run `MoshTransportTests`/
   are all fixed constants, not tuned against anything real -- fine for a
   local/low-latency path, untested for whether they're well-chosen on a
   slow/high-latency link.
+- `MoshTransport.equivalentSince`'s self-healing tradeoff (a resend
+  anchored outside the safe range is dropped, trusting the server's next
+  tick to redeliver correctly-anchored) has only been reasoned through and
+  unit-tested with hand-crafted instructions (`MoshTransportTests`), not
+  yet verified against a real `mosh-server` driving an actual
+  redraw-heavy TUI (e.g. `claude`, `vim`, `htop`) over a real network,
+  the way the roaming/blackout scenarios above were. If a future report of
+  garbled or missing content over Mosh doesn't match the predictive-echo
+  or dedup bugs already documented here, verify this path the same way:
+  a standalone macOS SwiftPM executable driving `MoshTransport` directly
+  against a real Docker `mosh-server`.
 
 ### Verifying against a real `mosh-server`
 
