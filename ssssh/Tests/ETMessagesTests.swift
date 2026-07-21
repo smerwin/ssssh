@@ -106,6 +106,26 @@ struct ETMessagesTests {
         #expect(terminalRange.isDisjoint(with: etRange))
     }
 
+    @Test("SequenceHeader encodes to match real protoc output")
+    func sequenceHeaderEncode() throws {
+        var header = ETSequenceHeader()
+        header.sequenceNumber = 42
+        #expect(header.encode() == [0x08, 0x2a])
+        #expect(try ETSequenceHeader.decode([0x08, 0x2a]).sequenceNumber == 42)
+    }
+
+    @Test("CatchupBuffer encodes repeated bytes fields to match real protoc output")
+    func catchupBufferEncode() throws {
+        var catchup = ETCatchupBuffer()
+        catchup.buffer = [Array("hello".utf8), Array("world!".utf8)]
+        let expected: [UInt8] = [
+            0x0a, 0x05, 0x68, 0x65, 0x6c, 0x6c, 0x6f, 0x0a, 0x06, 0x77, 0x6f, 0x72, 0x6c, 0x64, 0x21,
+        ]
+        #expect(catchup.encode() == expected)
+        let decoded = try ETCatchupBuffer.decode(expected)
+        #expect(decoded.buffer == [Array("hello".utf8), Array("world!".utf8)])
+    }
+
     @Test("parseFields rejects a length-delimited field whose length exceeds the remaining bytes, instead of trapping")
     func parseFieldsRejectsOversizedLength() {
         // Tag for field 1, wire type 2 (length-delimited) = (1 << 3) | 2 = 0x0a,

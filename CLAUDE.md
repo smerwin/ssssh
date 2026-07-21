@@ -1143,20 +1143,41 @@ way `MoshTransport`'s roaming does for UDP.
 
 ### Wire framing and crypto
 
-**Correction, from reading `src/base/SocketHandler.hpp`'s `readPacket`/
-`writePacket` directly rather than assuming a conventional 4-byte
-network-order length prefix**: the prefix is an **8-byte `int64_t`**
-(`sizeof(int64_t)`, not 4), and it is read/written via a raw
-`readAll`/`writeAllOrThrow` memcpy of the in-memory representation with
-**no byte-swap anywhere in that path** (no `htonll`/`ntohll` call) -- so
-it's effectively **little-endian**, since every platform ET ships for is
-little-endian, not the big-endian "network order" a length prefix would
-conventionally use. A Swift port must write/read an 8-byte little-endian
-length, not a 4-byte big-endian one, or it will corrupt every message
-past the first.
+**A correction of a correction -- read this before touching wire framing.**
+An earlier pass through this file read `src/base/SocketHandler.hpp`'s
+`readPacket`/`writePacket` and concluded *that* was the length prefix
+governing every message: an **8-byte `int64_t`**, read/written via a raw
+memcpy with **no byte-swap anywhere in that path**, hence little-endian in
+practice -- fixing an original wrong guess of "4-byte big-endian." That fix
+was itself incomplete, caught by reading `src/base/BackedReader.cpp`/
+`BackedWriter.cpp` and `Connection.cpp` directly (the classes that actually
+own and drive the live client/server session, per `Connection.hpp`):
+**`BackedReader`/`BackedWriter` never call `SocketHandler::readPacket`/
+`writePacket` at all.** They implement their *own* inline framing directly
+against the raw `SocketHandler::read`/`write` primitives --
+`BackedWriter::write` does `messageSize = htonl(packet.length());
+string s = string("0000") + packet.serialize(); memcpy(&s[0], &messageSize,
+sizeof(int));`: a **4-byte**, **big-endian** (`htonl`) prefix,
+`sizeof(int)` not `sizeof(int64_t)`. `BackedReader::getPartialMessageLength`
+decodes it symmetrically with `ntohl`. **This 4-byte big-endian framing is
+what governs every ordinary packet** (`TerminalBuffer`, `TerminalInfo`,
+etc.) on the live connection.
 
-With that corrected: every message on the wire is that 8-byte
-little-endian length prefix (covering the entire following packet, header
+The 8-byte int64 mechanism described in the first correction is real, but
+its only actual caller is `Connection::recover`'s one-shot reconnect
+handshake (`writeProto`/`readProto` for exactly one `SequenceHeader` then
+one `CatchupBuffer`, each direction, on a freshly accepted socket, before
+ordinary `Packet` traffic resumes) -- see "Resumption/reconnect protocol"
+below. Two real, different length-prefix mechanisms coexist in this
+codebase for two different purposes; neither correction here was wrong
+about the *bytes it was reading*, only about *which wire path those bytes
+actually governed*. If you're about to trust a framing/format claim in
+this file, prefer finding the exact call site that produces the bytes on
+the wire you actually care about over the first plausible-looking
+read/write helper with a matching-sounding name.
+
+With that corrected: every ordinary packet on the wire is a 4-byte
+big-endian length prefix (covering the entire following packet, header
 included) plus a serialized `Packet` (`src/base/Packet.hpp`): `[1 byte:
 encrypted flag][1 byte: packet type][ciphertext-or-plaintext payload]`.
 The 2-byte flag+type prefix is **not** covered by encryption or the MAC --
@@ -1275,6 +1296,49 @@ machinery is a bounded deque of already-encrypted packets plus two
 integer counters -- meaningfully less protocol-state complexity than the
 Mosh work already done here, independent of the deployment-model
 constraint above.
+
+### What's implemented
+
+`ssssh/Sources/EternalTerminal/ETBackedIO.swift`'s `ETBackedWriter`/
+`ETBackedReader` port `BackedWriter`/`BackedReader` from the real source
+above (`src/base/BackedWriter.cpp`/`BackedReader.cpp`), not from this
+section's own prose summary -- reading the actual C++ surfaced behavior
+this summary didn't capture, most importantly that `sequenceNumber` on the
+reader side is credited for an entire replay batch **immediately** when
+`revive()` queues it, not incrementally as each queued packet is later
+drained (`BackedReader::revive`'s `sequenceNumber += newLocalEntries.size()`
+happens once, up front; only genuinely new live-socket reads increment it
+one at a time via `constructPartialMessage`). Also ported faithfully rather
+than "cleaned up": `BackedWriter::write`'s disconnect-buffer-capacity check
+uses the packet's *pre-encryption* length, while the byte count it
+actually accumulates against that cap is *post-encryption* (16 bytes
+larger, from `ETSecretBox`'s MAC) -- a real, minor inconsistency in the
+reference implementation, not a bug worth silently fixing in a port meant
+to interoperate with it.
+
+One deliberate adaptation, not a source-fidelity gap: the real
+`BackedWriter`/`BackedReader` own a raw socket fd and perform blocking
+reads/writes inline. `ETBackedWriter.write` instead returns the framed
+bytes to send (or `.bufferedOnly`/`.skipped`) without touching a socket,
+and `ETBackedReader` consumes already-received `ETPacket`s rather than
+reading them itself -- matching this app's established pattern (see
+`ETBootstrap`/`ETCrypto`/`ETPacket` above) of keeping protocol-state logic
+independently testable without a live `NWConnection`, deferred to the
+transport layer described in "Recommended scope for a first pass" below.
+
+`ETBackedIOTests` mirrors the scenarios in EternalTerminal's own
+`test/unit_tests/BackedIOTest.cpp` (round-trip, in-order recovery, revive
+seeding the replay queue and crediting its sequence number immediately,
+the disconnected-buffer cap with off-by-one tolerance for the MAC-overhead
+quirk above, and the connected 64MB trim-then-`tooFarBehind` behavior) --
+not just invented independently, adapted from the same real test file the
+reference implementation ships. Also covers two guard cases the real
+`recover()` enforces that weren't in that upstream test file specifically:
+refusing to run while still connected, and rejecting a peer claiming to be
+*ahead* of what was actually sent -- modeled as a catchable
+`RecoverError.peerAheadOfSelf` rather than the real client's `STFATAL`
+(process abort), since crashing the whole app is not appropriate behavior
+for a network protocol violation from a peer.
 
 ### Why native scrolling and tmux -CC work -- confirmed as a "dumb pipe"
 
@@ -1438,12 +1502,15 @@ only used for jumphost/port-forward setup, already out of this pass's
 scope. `ssssh/Sources/EternalTerminal/ETProtobuf.swift` is a from-scratch
 reader/writer (varint + length-delimited only, same shape as
 `MoshProtobuf` but deliberately not shared code -- see its doc comment
-for why), with `ETMessages.swift` building the six message types plus
-`ETPacketHeader`, a single `UInt8` enum unifying `EtPacketType`'s
-252-254 range and `TerminalPacketType`'s 0-10 range into the one
-namespace `Packet.header` actually occupies on the wire (the two proto
-enums are numbered to never collide, by design, per `EtPacketType`'s own
-"count down from 254 to avoid collisions" source comment).
+for why), with `ETMessages.swift` building eight message types --
+`ConnectRequest`/`ConnectResponse`, `TerminalUserInfo`, `TermInit`,
+`TerminalBuffer`, `TerminalInfo`, and `SequenceHeader`/`CatchupBuffer` (the
+two used only by the reconnect handshake, see "Resumption/reconnect
+protocol" below) -- plus `ETPacketHeader`, a single `UInt8` enum unifying
+`EtPacketType`'s 252-254 range and `TerminalPacketType`'s 0-10 range into
+the one namespace `Packet.header` actually occupies on the wire (the two
+proto enums are numbered to never collide, by design, per `EtPacketType`'s
+own "count down from 254 to avoid collisions" source comment).
 
 Verified against **real `protoc --encode`/`--decode` output** (protoc
 35.1, run directly against ET's actual `.proto` files fetched from
@@ -1459,16 +1526,27 @@ from the spec. Also includes a hardening test mirroring `MoshProtobuf`'s
 own (an oversized length-delimited field must be rejected before
 `Int(length)` ever gets a chance to trap on a value near `UInt64.max`).
 
+**The resend/replay buffer is done too** -- see "What's implemented" under
+"Resumption/reconnect protocol" above for `ETBackedWriter`/`ETBackedReader`
+and the real inconsistencies/behaviors ported faithfully rather than
+"cleaned up."
+
 What's next, in the order this section originally intended (wire protocol
-only, nothing UI/integration-level yet):
-1. The sequence-numbered resend/replay buffer described in "Resumption/
-   reconnect protocol" above.
-2. Only after 1 is independently verified: a real `NWConnection`-based
-   `ETTransport` wiring `ETPacket`/`ETPacketStreamReader`/`ETCrypto`/
-   `ETMessages`/the resend buffer together, verified against the same live
-   `etserver` container `ETBootstrap` already proved out, the same
-   incremental "verify each piece against ground truth before composing
-   them" discipline the Mosh implementation followed throughout this file.
+only, nothing UI/integration-level yet) -- **this is the only piece left**:
+a real `NWConnection`-based `ETTransport` wiring `ETPacket`/
+`ETPacketStreamReader`/`ETCrypto`/`ETMessages`/`ETBackedIO` together: the
+initial `ConnectRequest`/`ConnectResponse` handshake, ordinary packet I/O
+through `ETBackedWriter`/`ETBackedReader`, and the `ETRecoveryProto`-framed
+`SequenceHeader`/`CatchupBuffer` exchange on reconnect (see
+`Connection::recover` in "Resumption/reconnect protocol" above for the
+exact sequence: write `SequenceHeader`, read `SequenceHeader`, write
+`CatchupBuffer`, read `CatchupBuffer`, *then* resume ordinary packet
+traffic on the new socket -- get this ordering wrong and a reconnect will
+either hang waiting on the wrong read or desync the backup/replay state).
+Verified against the same live `etserver` container `ETBootstrap` already
+proved out, the same incremental "verify each piece against ground truth
+before composing them" discipline the Mosh implementation followed
+throughout this file.
 
 ## TestFlight release notes
 

@@ -29,13 +29,13 @@ struct ETPacketTests {
         }
     }
 
-    @Test("frame() prepends an 8-byte little-endian length prefix")
-    func framePrependsLittleEndianLength() {
+    @Test("frame() prepends a 4-byte big-endian length prefix, matching BackedWriter's htonl framing")
+    func framePrependsBigEndianLength() {
         let packet = ETPacket(encrypted: false, header: 1, payload: Array(repeating: 0xAB, count: 300))
         let framed = ETPacketStreamReader.frame(packet)
         // serialized length = 2 (header) + 300 (payload) = 302 = 0x12E
-        #expect(Array(framed[0..<8]) == [0x2E, 0x01, 0, 0, 0, 0, 0, 0])
-        #expect(framed.count == 8 + 302)
+        #expect(Array(framed[0..<4]) == [0, 0, 0x01, 0x2E])
+        #expect(framed.count == 4 + 302)
     }
 
     @Test("Reader round-trips a single packet fed in one call")
@@ -54,7 +54,7 @@ struct ETPacketTests {
         let reader = ETPacketStreamReader()
 
         // Feed in irregular 3-byte chunks, deliberately not aligned to the
-        // 8-byte length prefix or any other structure -- this is the
+        // 4-byte length prefix or any other structure -- this is the
         // realistic case for TCP, which has no message-boundary concept.
         var collected: [ETPacket] = []
         var offset = 0
@@ -76,27 +76,27 @@ struct ETPacketTests {
         #expect(result == [first, second])
     }
 
-    @Test("Reader consumes a zero-length message without emitting a packet")
-    func consumesZeroLengthMessage() throws {
+    @Test("Reader accepts a zero-length payload packet (still a valid 2-byte header-only packet)")
+    func acceptsZeroLengthPayload() throws {
         let reader = ETPacketStreamReader()
-        let zeroLengthPrefix: [UInt8] = [0, 0, 0, 0, 0, 0, 0, 0]
-        let real = ETPacket(encrypted: false, header: 3, payload: [7])
-        let combined = zeroLengthPrefix + ETPacketStreamReader.frame(real)
-        let result = try reader.feed(combined)
+        let real = ETPacket(encrypted: false, header: 3, payload: [])
+        let result = try reader.feed(ETPacketStreamReader.frame(real))
         #expect(result == [real])
     }
 
     @Test("Reader throws on a length prefix beyond the 128 MB bound")
     func rejectsOversizedLength() {
         let reader = ETPacketStreamReader()
-        // 129 * 1024 * 1024, little-endian, as an 8-byte prefix with no
-        // payload following -- the reader must reject based on the length
-        // field alone, before waiting for (or receiving) that much data.
-        let hugeLength: Int64 = 129 * 1024 * 1024
-        var prefix = [UInt8](repeating: 0, count: 8)
-        for i in 0..<8 {
-            prefix[i] = UInt8((UInt64(bitPattern: hugeLength) >> (8 * i)) & 0xff)
-        }
+        // 129 * 1024 * 1024, big-endian, as a 4-byte prefix with no payload
+        // following -- the reader must reject based on the length field
+        // alone, before waiting for (or receiving) that much data.
+        let hugeLength: UInt32 = 129 * 1024 * 1024
+        let prefix: [UInt8] = [
+            UInt8((hugeLength >> 24) & 0xff),
+            UInt8((hugeLength >> 16) & 0xff),
+            UInt8((hugeLength >> 8) & 0xff),
+            UInt8(hugeLength & 0xff),
+        ]
         #expect(throws: ETPacketStreamReader.StreamError.self) {
             try reader.feed(prefix)
         }
@@ -105,9 +105,43 @@ struct ETPacketTests {
     @Test("Reader throws on a negative length prefix")
     func rejectsNegativeLength() {
         let reader = ETPacketStreamReader()
-        let negativeOne: [UInt8] = Array(repeating: 0xff, count: 8)
+        let negativeOne: [UInt8] = [0xff, 0xff, 0xff, 0xff]
         #expect(throws: ETPacketStreamReader.StreamError.self) {
             try reader.feed(negativeOne)
+        }
+    }
+}
+
+struct ETRecoveryProtoTests {
+    @Test("frame()/parseOne() round-trips a message")
+    func roundTrips() throws {
+        let payload = Array("hello recovery".utf8)
+        let framed = ETRecoveryProto.frame(payload)
+        let result = try ETRecoveryProto.parseOne(framed)
+        #expect(result?.payload == payload)
+        #expect(result?.consumed == framed.count)
+    }
+
+    @Test("parseOne() returns nil when the buffer doesn't yet hold a complete message")
+    func returnsNilForIncompleteBuffer() throws {
+        let framed = ETRecoveryProto.frame(Array("hello".utf8))
+        let result = try ETRecoveryProto.parseOne(Array(framed.dropLast(2)))
+        #expect(result == nil)
+    }
+
+    @Test("parseOne() returns nil when fewer than 8 bytes are available")
+    func returnsNilForShortLengthPrefix() throws {
+        let result = try ETRecoveryProto.parseOne([1, 2, 3])
+        #expect(result == nil)
+    }
+
+    @Test("parseOne() throws on an oversized length prefix")
+    func rejectsOversizedLength() {
+        let hugeLength: UInt64 = 129 * 1024 * 1024
+        var prefix = [UInt8](repeating: 0, count: 8)
+        for i in 0..<8 { prefix[i] = UInt8((hugeLength >> (8 * i)) & 0xff) }
+        #expect(throws: ETRecoveryProto.RecoveryProtoError.self) {
+            try ETRecoveryProto.parseOne(prefix)
         }
     }
 }

@@ -25,6 +25,50 @@ enum ETPacketHeader: UInt8 {
     case heartbeat = 254
 }
 
+/// `message SequenceHeader` (`proto/ET.proto`) -- used only by
+/// `Connection::recover`'s (`src/base/Connection.cpp`) one-shot reconnect
+/// handshake, framed with `ETRecoveryProto`, not the ordinary packet
+/// stream's `ETPacketStreamReader` framing.
+struct ETSequenceHeader {
+    var sequenceNumber: Int32 = 0
+
+    func encode() -> [UInt8] {
+        var w = ETProtobuf.Writer()
+        w.writeSignedVarint(field: 1, value: Int64(sequenceNumber))
+        return w.bytes
+    }
+
+    static func decode(_ data: [UInt8]) throws -> ETSequenceHeader {
+        var result = ETSequenceHeader()
+        for field in try ETProtobuf.parseFields(data) {
+            if field.number == 1 { result.sequenceNumber = Int32(truncatingIfNeeded: field.signedVarint ?? 0) }
+        }
+        return result
+    }
+}
+
+/// `message CatchupBuffer` (`proto/ET.proto`) -- the replayed,
+/// still-encrypted, still-serialized `ETPacket` bytes
+/// `ETBackedWriter.recover(lastValidSequenceNumber:)` produces, carried
+/// across the same one-shot reconnect handshake as `ETSequenceHeader`.
+struct ETCatchupBuffer {
+    var buffer: [[UInt8]] = []
+
+    func encode() -> [UInt8] {
+        var w = ETProtobuf.Writer()
+        for entry in buffer { w.writeBytes(field: 1, value: entry, omitIfEmpty: false) }
+        return w.bytes
+    }
+
+    static func decode(_ data: [UInt8]) throws -> ETCatchupBuffer {
+        var result = ETCatchupBuffer()
+        for field in try ETProtobuf.parseFields(data) {
+            if field.number == 1, let bytes = field.bytes { result.buffer.append(bytes) }
+        }
+        return result
+    }
+}
+
 /// `message ConnectRequest` (`proto/ET.proto`).
 struct ETConnectRequest {
     var clientId: String = ""

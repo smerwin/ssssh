@@ -30,74 +30,130 @@ struct ETPacket: Equatable {
 }
 
 /// Incrementally reassembles `ETPacket`s from a raw byte stream carrying
-/// ET's length-prefixed wire framing. Feed it arbitrarily-chunked bytes as
-/// they arrive off a TCP connection (`NWConnection` delivers data in
-/// whatever chunks the kernel hands back, not aligned to message
-/// boundaries); it returns every packet that becomes complete as a result.
+/// the framing `BackedReader`/`BackedWriter` (`src/base/BackedReader.cpp`'s
+/// `getPartialMessageLength`/`constructPartialMessage`,
+/// `src/base/BackedWriter.cpp`'s `write`) actually use on the live
+/// connection for every ordinary packet (`TerminalBuffer`, `TerminalInfo`,
+/// etc.) -- **not** `SocketHandler::readPacket`/`writePacket`'s 8-byte
+/// mechanism (see `ETRecoveryProto` for where that one really is used).
 ///
-/// **The length prefix is 8 bytes, little-endian** -- confirmed by reading
-/// `SocketHandler::readPacket`/`writePacket` (`src/base/SocketHandler.hpp`)
-/// directly: they `readAll`/`writeAllOrThrow` a raw `int64_t` with no
-/// byte-swap anywhere in that path, which is little-endian in practice
-/// since every platform ET ships for is. This corrects an earlier, wrong
-/// "4-byte big-endian" assumption in CLAUDE.md's Eternal Terminal notes --
-/// see the correction there for detail. Get this wrong and every message
-/// past the first desyncs silently, not just the current one.
+/// **This is a correction of a correction.** An earlier pass through this
+/// file read `SocketHandler::readPacket`/`writePacket`
+/// (`src/base/SocketHandler.hpp`) and concluded the wire used an 8-byte
+/// little-endian length prefix everywhere, fixing an original wrong
+/// "4-byte big-endian" guess. That fix was itself incomplete: reading
+/// `BackedReader.cpp`/`BackedWriter.cpp` directly (the classes `Connection`
+/// -- the class actually driving the live client/server session, per
+/// `src/base/Connection.hpp` -- owns and calls) shows they never call
+/// `SocketHandler::readPacket`/`writePacket` at all. They implement their
+/// *own* inline framing directly against the raw `SocketHandler::read`/
+/// `write` primitives: `BackedWriter::write` does
+/// `messageSize = htonl(packet.length()); string s = string("0000") +
+/// packet.serialize(); memcpy(&s[0], &messageSize, sizeof(int));` --
+/// a **4-byte**, **big-endian** (`htonl`) prefix, `sizeof(int)` not
+/// `sizeof(int64_t)`. `BackedReader::getPartialMessageLength` decodes it
+/// symmetrically with `ntohl`. The 8-byte int64 mechanism is real and
+/// correctly described where it's actually used -- see `ETRecoveryProto`.
+/// This is the second time a "confirmed by reading the source" claim in
+/// this file turned out to be reading the *wrong* source for the question
+/// being asked; if you're about to trust a framing/format claim here,
+/// prefer finding the exact call site that produces the bytes on the wire
+/// you care about over the first plausible-looking read/write helper.
 final class ETPacketStreamReader {
-    /// Matches `SocketHandler`'s own bound (128 MB) -- also doubles as
-    /// protection against a corrupt or hostile length prefix driving
-    /// unbounded buffer growth while waiting for the rest of a "packet"
-    /// that will never arrive.
-    static let maxPacketLength: Int64 = 128 * 1024 * 1024
+    /// `BackedReader`/`BackedWriter` don't enforce an explicit size cap the
+    /// way `SocketHandler::readPacket` does (128 MB) -- this reader still
+    /// enforces one, as protection against a corrupt or hostile length
+    /// prefix driving unbounded buffer growth while waiting for the rest of
+    /// a "packet" that will never arrive. Arbitrary but generous relative
+    /// to any real terminal-session message.
+    static let maxPacketLength: Int32 = 128 * 1024 * 1024
 
     private var buffer: [UInt8] = []
 
-    enum StreamError: Error, Equatable { case invalidLength(Int64) }
+    enum StreamError: Error, Equatable { case invalidLength(Int32) }
 
     /// Appends newly-received bytes and returns every `ETPacket` that
     /// became complete as a result (zero, one, or several, depending on
-    /// how the underlying reads happened to chunk). A zero-length message
-    /// (`length == 0`) is consumed from the stream but produces no
-    /// `ETPacket` -- matching `readPacket` returning `false` rather than
-    /// trying to parse an empty payload as a real packet.
+    /// how the underlying reads happened to chunk).
     func feed(_ bytes: [UInt8]) throws -> [ETPacket] {
         buffer.append(contentsOf: bytes)
         var packets: [ETPacket] = []
-        while buffer.count >= 8 {
+        while buffer.count >= 4 {
             let length = Self.readLengthPrefix(buffer)
             guard length >= 0 && length <= Self.maxPacketLength else {
                 throw StreamError.invalidLength(length)
             }
-            let total = 8 + Int(length)
+            let total = 4 + Int(length)
             guard buffer.count >= total else { break }
-            if length > 0 {
-                let packetBytes = Array(buffer[8..<total])
-                packets.append(try ETPacket.parse(packetBytes))
-            }
+            let packetBytes = Array(buffer[4..<total])
+            packets.append(try ETPacket.parse(packetBytes))
             buffer.removeFirst(total)
         }
         return packets
     }
 
-    private static func readLengthPrefix(_ buffer: [UInt8]) -> Int64 {
-        var value: UInt64 = 0
-        for i in 0..<8 {
-            value |= UInt64(buffer[i]) << (8 * i)
-        }
-        return Int64(bitPattern: value)
+    private static func readLengthPrefix(_ buffer: [UInt8]) -> Int32 {
+        let value = (UInt32(buffer[0]) << 24) | (UInt32(buffer[1]) << 16) | (UInt32(buffer[2]) << 8) | UInt32(buffer[3])
+        return Int32(bitPattern: value)
     }
 
-    /// Prepends the 8-byte little-endian length prefix around a serialized
-    /// packet -- the sender-side counterpart to `feed`, matching
-    /// `writePacket`.
+    /// Prepends the 4-byte big-endian (`htonl`) length prefix around a
+    /// serialized packet -- the sender-side counterpart to `feed`, matching
+    /// `BackedWriter::write`.
     static func frame(_ packet: ETPacket) -> [UInt8] {
         let serialized = packet.serialize()
-        let length = UInt64(serialized.count)
+        let length = UInt32(serialized.count)
+        var out: [UInt8] = [
+            UInt8((length >> 24) & 0xff),
+            UInt8((length >> 16) & 0xff),
+            UInt8((length >> 8) & 0xff),
+            UInt8(length & 0xff),
+        ]
+        out.append(contentsOf: serialized)
+        return out
+    }
+}
+
+/// The 8-byte-int64-length-prefixed mechanism `SocketHandler::readProto`/
+/// `writeProto` (`src/base/SocketHandler.hpp`) actually implement --
+/// confirmed real, just not what governs the ordinary packet stream (see
+/// `ETPacketStreamReader`'s doc comment). `Connection::recover`
+/// (`src/base/Connection.cpp`) is the only real caller: exactly one
+/// `SequenceHeader` written, one read, then one `CatchupBuffer` written,
+/// one read, all on a *freshly accepted* socket before any ordinary
+/// `Packet` traffic resumes on it -- a short, one-shot exchange, not a
+/// general streaming reassembler the way the packet stream needs. The
+/// prefix is a raw `int64_t` memcpy with no byte-swap in that path, so
+/// little-endian in practice (every platform ET ships for is).
+enum ETRecoveryProto {
+    /// Matches `SocketHandler::readProto`/`writeProto`'s own bound.
+    static let maxMessageLength: Int64 = 128 * 1024 * 1024
+
+    enum RecoveryProtoError: Error, Equatable { case invalidLength(Int64) }
+
+    static func frame(_ bytes: [UInt8]) -> [UInt8] {
+        let length = UInt64(bytes.count)
         var out = [UInt8](repeating: 0, count: 8)
         for i in 0..<8 {
             out[i] = UInt8((length >> (8 * i)) & 0xff)
         }
-        out.append(contentsOf: serialized)
+        out.append(contentsOf: bytes)
         return out
+    }
+
+    /// Parses exactly one length-prefixed message from the *start* of
+    /// `buffer`, returning the payload and how many bytes were consumed,
+    /// or `nil` if `buffer` doesn't yet contain a complete message.
+    static func parseOne(_ buffer: [UInt8]) throws -> (payload: [UInt8], consumed: Int)? {
+        guard buffer.count >= 8 else { return nil }
+        var value: UInt64 = 0
+        for i in 0..<8 { value |= UInt64(buffer[i]) << (8 * i) }
+        let length = Int64(bitPattern: value)
+        guard length >= 0 && length <= maxMessageLength else {
+            throw RecoveryProtoError.invalidLength(length)
+        }
+        let total = 8 + Int(length)
+        guard buffer.count >= total else { return nil }
+        return (Array(buffer[8..<total]), total)
     }
 }
