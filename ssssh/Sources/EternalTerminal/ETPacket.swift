@@ -117,19 +117,26 @@ final class ETPacketStreamReader {
 /// The 8-byte-int64-length-prefixed mechanism `SocketHandler::readProto`/
 /// `writeProto` (`src/base/SocketHandler.hpp`) actually implement --
 /// confirmed real, just not what governs the ordinary packet stream (see
-/// `ETPacketStreamReader`'s doc comment). `Connection::recover`
-/// (`src/base/Connection.cpp`) is the only real caller: exactly one
-/// `SequenceHeader` written, one read, then one `CatchupBuffer` written,
-/// one read, all on a *freshly accepted* socket before any ordinary
-/// `Packet` traffic resumes on it -- a short, one-shot exchange, not a
-/// general streaming reassembler the way the packet stream needs. The
+/// `ETPacketStreamReader`'s doc comment). **Not recovery-specific despite
+/// an earlier pass here naming this type `ETRecoveryProto`** -- reading
+/// `ClientConnection::connect` (`src/base/ClientConnection.cpp`) shows the
+/// *initial* handshake uses this exact same mechanism first: one
+/// `ConnectRequest` written, one `ConnectResponse` read, on the brand-new
+/// TCP socket, *before* any crypto state or `Packet` framing exists at
+/// all. `Connection::recover` (`src/base/Connection.cpp`) reuses it later
+/// for one `SequenceHeader` written, one read, then one `CatchupBuffer`
+/// written, one read, on a freshly reconnected socket, before ordinary
+/// `Packet` traffic resumes on it. Both are short, one-shot exchanges (not
+/// a general streaming reassembler the way the packet stream needs) that
+/// happen to use the identical wire mechanism -- one type correctly
+/// serving both call sites, not a coincidence worth splitting apart. The
 /// prefix is a raw `int64_t` memcpy with no byte-swap in that path, so
 /// little-endian in practice (every platform ET ships for is).
-enum ETRecoveryProto {
+enum ETOneShotProto {
     /// Matches `SocketHandler::readProto`/`writeProto`'s own bound.
     static let maxMessageLength: Int64 = 128 * 1024 * 1024
 
-    enum RecoveryProtoError: Error, Equatable { case invalidLength(Int64) }
+    enum OneShotProtoError: Error, Equatable { case invalidLength(Int64) }
 
     static func frame(_ bytes: [UInt8]) -> [UInt8] {
         let length = UInt64(bytes.count)
@@ -150,7 +157,7 @@ enum ETRecoveryProto {
         for i in 0..<8 { value |= UInt64(buffer[i]) << (8 * i) }
         let length = Int64(bitPattern: value)
         guard length >= 0 && length <= maxMessageLength else {
-            throw RecoveryProtoError.invalidLength(length)
+            throw OneShotProtoError.invalidLength(length)
         }
         let total = 8 + Int(length)
         guard buffer.count >= total else { return nil }

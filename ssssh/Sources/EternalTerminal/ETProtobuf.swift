@@ -49,6 +49,20 @@ enum ETProtobuf {
             writeRawVarint(UInt64(bitPattern: value))
         }
 
+        /// The real client always calls `set_jumphost(false)` explicitly
+        /// (`TerminalClient`'s constructor), which real proto2 accessors
+        /// track as "present" and would serialize even at the default
+        /// value -- this omits it instead, same "omit if zero, no reader
+        /// here ever calls `has_foo()`" reasoning as `writeVarint`. A real
+        /// server only ever calls the plain `jumphost()` accessor, which
+        /// returns the same default `false` whether the field was omitted
+        /// or explicitly sent as `false`, so this diverges from the real
+        /// client's exact bytes without diverging from what any consumer
+        /// observes.
+        mutating func writeBool(field: Int, value: Bool) {
+            writeVarint(field: field, value: value ? 1 : 0)
+        }
+
         mutating func writeBytes(field: Int, value: [UInt8], omitIfEmpty: Bool = true) {
             guard !(omitIfEmpty && value.isEmpty) else { return }
             writeTag(field: field, wireType: 2)

@@ -106,6 +106,26 @@ struct ETMessagesTests {
         #expect(terminalRange.isDisjoint(with: etRange))
     }
 
+    @Test("InitialPayload with jumphost true matches real protoc output")
+    func initialPayloadEncode() {
+        var payload = ETInitialPayload()
+        payload.jumphost = true
+        #expect(payload.encode() == [0x08, 0x01])
+    }
+
+    @Test("InitialPayload with jumphost false encodes empty -- semantically identical to protoc's explicit-default bytes to any reader that only calls the plain accessor")
+    func initialPayloadEncodeFalseOmits() {
+        let payload = ETInitialPayload()
+        #expect(payload.encode() == [])
+    }
+
+    @Test("InitialResponse decodes a real protoc-encoded error")
+    func initialResponseDecode() throws {
+        let bytes: [UInt8] = [0x0a, 0x07, 0x62, 0x61, 0x64, 0x20, 0x6b, 0x65, 0x79]
+        let decoded = try ETInitialResponse.decode(bytes)
+        #expect(decoded.error == "bad key")
+    }
+
     @Test("SequenceHeader encodes to match real protoc output")
     func sequenceHeaderEncode() throws {
         var header = ETSequenceHeader()

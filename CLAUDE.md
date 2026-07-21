@@ -948,17 +948,29 @@ verified here the same way CLAUDE.md's SSH section recommends for
 Process/NSTask: a standalone macOS SwiftPM executable importing the same
 Mosh sources and Citadel, not an iOS Simulator XCTest.
 
-## Eternal Terminal support (bootstrap detection implemented -- wire protocol not started)
+## Eternal Terminal support (wire protocol complete and live-verified -- no UI/integration work started)
 
-This started as a scoping writeup from source research; most of it below is
-still exactly that (a starting point, not a finished design), but
-`ssssh/Sources/EternalTerminal/ETBootstrap.swift` now implements and
-verifies the detection/bootstrap half described in "Bootstrap flow" below
--- see "What's implemented" immediately after the bottom-line paragraph for
-what exists today and how it was verified. Every claim below is cited
-against `MisterTea/EternalTerminal`'s actual source (its `src/` and
-`proto/` directories), the same way the Mosh section above is grounded in
-`mobile-shell/mosh`'s source rather than general knowledge.
+This started as a scoping writeup from source research. The wire protocol
+it scoped is now fully implemented in `ssssh/Sources/EternalTerminal/`
+(`ETBootstrap`, `ETCrypto`, `ETPacket`, `ETMessages`, `ETBackedIO`,
+`ETTransport`) and verified end-to-end against a real, unmodified
+`etserver` -- see each subsection's "What's implemented" note for what
+exists and how it was verified, and "Still open" at the end of this
+section for what remains (entirely UI/integration work: wiring
+`ETTransport` into a live session the way `SSHConnection`/`MoshTransport`
+already are, host-key/Face ID/background-execution behavior, and real
+network-handoff testing beyond an induced Docker blackout). Every claim
+below is cited against `MisterTea/EternalTerminal`'s actual source (its
+`src/` and `proto/` directories), the same way the Mosh section above is
+grounded in `mobile-shell/mosh`'s source rather than general knowledge --
+several claims in this section were corrected mid-implementation by that
+same discipline (an id-mangling character count, MAC prepended vs.
+appended, an 8-byte vs. 4-byte length prefix used for two genuinely
+different purposes, the real `TerminalPacketType` count, and
+`TerminalUserInfo`/`TermInit` not actually being part of the client-visible
+protocol at all) -- each correction is left in place inline rather than
+silently fixed, since the corrections themselves are the more durable
+lesson for whoever touches this code next.
 
 **Bottom line**: ET's wire protocol is *architecturally simpler* to
 reimplement than Mosh's -- a reliable-byte-stream resume over TCP, not a
@@ -1531,22 +1543,92 @@ own (an oversized length-delimited field must be rejected before
 and the real inconsistencies/behaviors ported faithfully rather than
 "cleaned up."
 
-What's next, in the order this section originally intended (wire protocol
-only, nothing UI/integration-level yet) -- **this is the only piece left**:
-a real `NWConnection`-based `ETTransport` wiring `ETPacket`/
-`ETPacketStreamReader`/`ETCrypto`/`ETMessages`/`ETBackedIO` together: the
-initial `ConnectRequest`/`ConnectResponse` handshake, ordinary packet I/O
-through `ETBackedWriter`/`ETBackedReader`, and the `ETRecoveryProto`-framed
-`SequenceHeader`/`CatchupBuffer` exchange on reconnect (see
-`Connection::recover` in "Resumption/reconnect protocol" above for the
-exact sequence: write `SequenceHeader`, read `SequenceHeader`, write
-`CatchupBuffer`, read `CatchupBuffer`, *then* resume ordinary packet
-traffic on the new socket -- get this ordering wrong and a reconnect will
-either hang waiting on the wrong read or desync the backup/replay state).
-Verified against the same live `etserver` container `ETBootstrap` already
-proved out, the same incremental "verify each piece against ground truth
-before composing them" discipline the Mosh implementation followed
-throughout this file.
+**The wire protocol is complete.**
+`ssssh/Sources/EternalTerminal/ETTransport.swift`'s `ETTransport` is the
+`NWConnection`-based class wiring `ETPacket`/`ETPacketStreamReader`/
+`ETCrypto`/`ETMessages`/`ETBackedIO` together: the initial `ConnectRequest`/
+`ConnectResponse` handshake (`ETOneShotProto` framing, unencrypted, before
+any crypto state exists), then the **required** `InitialPayload`/
+`InitialResponse` exchange every session needs regardless of whether
+jumphost/port-forwarding is used (a correction to an earlier assumption in
+this file -- see below), then ordinary `TerminalBuffer`/`TerminalInfo`/
+`KEEP_ALIVE` packet I/O through `ETBackedWriter`/`ETBackedReader`, and the
+`ETOneShotProto`-framed `SequenceHeader`/`CatchupBuffer` exchange on
+reconnect.
+
+**Two corrections, both caught by reading `TerminalClient.cpp`'s actual
+constructor/`run()` directly rather than trusting this file's own
+`TerminalUserInfo`/`TermInit` prose** (see the correction on
+`ETTermInit`'s doc comment in `ETMessages.swift`): those two message types
+are **not** part of the client-visible wire protocol at all -- they're
+almost certainly exchanged between `etserver` and `etterminal` over their
+own local IPC, never sent or read by the client. What the client actually
+sends unconditionally after connecting is `InitialPayload` (an empty one,
+for a session with no port-forwarding: `jumphost: false`, empty
+`reversetunnels`, empty `environmentvariables`), and it blocks (up to
+three 1-second polls in the real client) for `InitialResponse` before
+proceeding -- skip this step and a real `etserver` will simply never
+progress the session past the handshake.
+
+**Verified end-to-end against a real, unmodified `etserver` in the same
+Docker container `ETBootstrap` proved out** -- not just unit-tested with
+mocks, which is the only way a bug like the one below could have been
+caught. A standalone SwiftPM sandbox executable drove the full stack:
+`ETBootstrap.detect` for id/passkey, `ETTransport` for the TCP session,
+sending `echo MARKER_12345\n` through a real interactive bash shell and
+observing the echoed marker come back through decrypted, decoded
+`TerminalBuffer` packets.
+
+**A real reconnect bug this live run caught, not a hand-crafted unit
+test**: `Connection::recover` (`src/base/Connection.cpp`) calls
+`writer->recover(...)` *before* `writer->revive(socketFd)` -- relying on
+`recover()`'s own guard that it must run while still disconnected. An
+earlier version of `ETTransport.handleConnectResponse`'s reconnect branch
+called `writer.revive(connected: true)` immediately upon receiving the
+reconnect `ConnectResponse`, *before* the `SequenceHeader`/`CatchupBuffer`
+exchange that actually calls `recover()` -- which made `recover()` throw
+`.stillConnected` every time. This passed every unit test (none of them
+exercised the real ordering across two separate one-shot messages) and
+only surfaced against live infrastructure: a genuine ~15-second network
+blackout induced via `iptables -A INPUT -p tcp --dport 2022 -j DROP`
+inside the container (needs `--cap-add=NET_ADMIN` at `docker run` time --
+a plain container can't run `iptables` at all, confirmed directly, exit
+code 4 "Permission denied (you must be root)" even as root, since it's a
+capability gate not a UID one), forcing the transport's own keepalive
+timeout to detect the dead connection and attempt a real reconnect. Fixed
+by moving `writer.revive(connected: true)` to `handleCatchupBuffer`, after
+`recover()` has already run and returned -- matching `Connection::recover`'s
+exact order (`reader->revive(...)` then `writer->revive(...)`, both only
+at the very end). Re-ran the same blackout-then-reconnect scenario
+afterward and confirmed a command sent after the blackout round-tripped
+correctly through the recovered session. If you ever touch the reconnect
+path in `ETTransport`, re-verify it this same way -- against a real
+blackout, not just by re-reading the code -- since this exact class of
+ordering mistake passed every other check available.
+
+### Still open
+
+Everything above is the wire protocol only -- **no UI/integration work has
+been done or attempted**, matching this section's scope throughout. Before
+`ETTransport` could back a live terminal session in this app the way
+`SSHConnection`/`MoshTransport` do today:
+- Wiring `ETTransport` into `SSHConnection`'s connect flow (or a sibling
+  path) the way Mosh's handoff race works (see the Concurrency
+  architecture section above) -- not attempted, and ET's flow doesn't
+  obviously need a race the way Mosh's does, since ET's own bootstrap
+  already rides the same trusted SSH connection with no separate UDP
+  round trip to wait on.
+- `ETBootstrap`+`ETTransport`'s interaction with `HostKeyStore`/Face ID/
+  background execution -- entirely unexamined, unlike Mosh's dedicated
+  investigation of each.
+- Real Wi-Fi-to-cellular handoff and iOS background-suspension behavior
+  for a live `NWConnection`-based TCP session -- only an induced Docker
+  network blackout has been tested, the same caveat Mosh's own roaming
+  section carries for its UDP transport.
+- `ETTransport`'s fixed 5-second keepalive interval (`MAX_CLIENT_KEEP_ALIVE_DURATION`,
+  matching the real client's own default) hasn't been tuned or tested
+  against a slow/high-latency link, the same open item Mosh's constants
+  carry.
 
 ## TestFlight release notes
 

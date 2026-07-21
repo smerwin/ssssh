@@ -112,26 +112,26 @@ struct ETPacketTests {
     }
 }
 
-struct ETRecoveryProtoTests {
+struct ETOneShotProtoTests {
     @Test("frame()/parseOne() round-trips a message")
     func roundTrips() throws {
         let payload = Array("hello recovery".utf8)
-        let framed = ETRecoveryProto.frame(payload)
-        let result = try ETRecoveryProto.parseOne(framed)
+        let framed = ETOneShotProto.frame(payload)
+        let result = try ETOneShotProto.parseOne(framed)
         #expect(result?.payload == payload)
         #expect(result?.consumed == framed.count)
     }
 
     @Test("parseOne() returns nil when the buffer doesn't yet hold a complete message")
     func returnsNilForIncompleteBuffer() throws {
-        let framed = ETRecoveryProto.frame(Array("hello".utf8))
-        let result = try ETRecoveryProto.parseOne(Array(framed.dropLast(2)))
+        let framed = ETOneShotProto.frame(Array("hello".utf8))
+        let result = try ETOneShotProto.parseOne(Array(framed.dropLast(2)))
         #expect(result == nil)
     }
 
     @Test("parseOne() returns nil when fewer than 8 bytes are available")
     func returnsNilForShortLengthPrefix() throws {
-        let result = try ETRecoveryProto.parseOne([1, 2, 3])
+        let result = try ETOneShotProto.parseOne([1, 2, 3])
         #expect(result == nil)
     }
 
@@ -140,8 +140,8 @@ struct ETRecoveryProtoTests {
         let hugeLength: UInt64 = 129 * 1024 * 1024
         var prefix = [UInt8](repeating: 0, count: 8)
         for i in 0..<8 { prefix[i] = UInt8((hugeLength >> (8 * i)) & 0xff) }
-        #expect(throws: ETRecoveryProto.RecoveryProtoError.self) {
-            try ETRecoveryProto.parseOne(prefix)
+        #expect(throws: ETOneShotProto.OneShotProtoError.self) {
+            try ETOneShotProto.parseOne(prefix)
         }
     }
 }

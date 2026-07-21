@@ -25,9 +25,47 @@ enum ETPacketHeader: UInt8 {
     case heartbeat = 254
 }
 
+/// `message InitialPayload` (`proto/ETerminal.proto`) -- confirmed by
+/// reading `TerminalClient`'s constructor/`run()` directly: the *actual*
+/// first message the client sends after the `ConnectRequest`/
+/// `ConnectResponse` handshake, as an ordinary encrypted `Packet` (header
+/// `.initialPayload`) through `ETBackedWriter`, unconditionally (not
+/// gated on jumphost/port-forwarding being requested). `reversetunnels`
+/// and `environmentvariables` are only populated by the CLI's
+/// `-r`/tunnel/agent-forwarding flags -- out of scope here (see CLAUDE.md's
+/// "Port-forwarding / jumphost" note) -- so this only exposes `jumphost`;
+/// `map<string, string>` support genuinely isn't needed to send the
+/// unconditional, always-required part of this message.
+struct ETInitialPayload {
+    var jumphost: Bool = false
+
+    func encode() -> [UInt8] {
+        var w = ETProtobuf.Writer()
+        w.writeBool(field: 1, value: jumphost)
+        return w.bytes
+    }
+}
+
+/// `message InitialResponse` (`proto/ETerminal.proto`) -- the client's
+/// required reply-wait after sending `ETInitialPayload`
+/// (`TerminalClient`'s constructor polls up to 3 one-second timeouts for a
+/// `Packet` with header `.initialResponse`); `error` set means the server
+/// rejected the session.
+struct ETInitialResponse {
+    var error: String = ""
+
+    static func decode(_ data: [UInt8]) throws -> ETInitialResponse {
+        var result = ETInitialResponse()
+        for field in try ETProtobuf.parseFields(data) {
+            if field.number == 1 { result.error = field.string ?? "" }
+        }
+        return result
+    }
+}
+
 /// `message SequenceHeader` (`proto/ET.proto`) -- used only by
 /// `Connection::recover`'s (`src/base/Connection.cpp`) one-shot reconnect
-/// handshake, framed with `ETRecoveryProto`, not the ordinary packet
+/// handshake, framed with `ETOneShotProto`, not the ordinary packet
 /// stream's `ETPacketStreamReader` framing.
 struct ETSequenceHeader {
     var sequenceNumber: Int32 = 0
@@ -187,6 +225,20 @@ struct ETTerminalInfo {
 /// string lists (name/value pairs by matching index), *not* a `map` field
 /// despite carrying environment variables the same way `InitialPayload`'s
 /// actual `map<string, string>` field does; this one needs no map support.
+///
+/// **Correction**: an earlier pass here assumed this and
+/// `TerminalUserInfo` were part of the client-visible wire protocol.
+/// Reading `TerminalClient.cpp`'s `run()`/constructor directly (the real
+/// client's actual send/receive loop) shows neither is ever written or
+/// read by the client at all -- only `ConnectRequest`/`ConnectResponse`,
+/// `InitialPayload`/`InitialResponse`, `TerminalBuffer`, `TerminalInfo`,
+/// `KEEP_ALIVE`, and the `PORT_FORWARD_*` messages appear there. Both are
+/// almost certainly server-internal, exchanged between `etserver` and
+/// `etterminal` over their own local IPC (`UserTerminalRouter`,
+/// mentioned in "Bootstrap flow" above), not on the client-to-`etserver`
+/// TCP connection `ETTransport` implements. Kept here (unused by
+/// `ETTransport`) since they're valid, verified-against-`protoc` encodings
+/// of real message shapes, not because anything currently sends them.
 struct ETTermInit {
     var environmentNames: [String] = []
     var environmentValues: [String] = []
@@ -211,9 +263,9 @@ struct ETTermInit {
     }
 }
 
-/// `message TerminalUserInfo` (`proto/ETerminal.proto`) -- carries the
-/// bootstrap id/passkey (`ETBootstrap.Result`) into the terminal-level
-/// session once the TCP connection is established.
+/// `message TerminalUserInfo` (`proto/ETerminal.proto`). See the
+/// correction on `ETTermInit`'s doc comment -- not part of the
+/// client-visible wire protocol, kept unused for the same reason.
 struct ETTerminalUserInfo {
     var id: String = ""
     var passkey: String = ""
