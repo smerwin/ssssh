@@ -1747,6 +1747,61 @@ i.e. a new session with a new id/passkey) should trigger sooner instead
 of spending the full retry budget on an id the server will never
 recognize again.
 
+### A seventh real bug: stale receive/send completions from a superseded connection corrupted the crypto nonce sequence (`ETSecretBox.OpenError`) after backgrounding
+
+Reported directly: ET sessions reliably died with `ETSecretBox.OpenError`
+after the app backgrounded. Root cause was a missing guard, not anything
+in the crypto primitives themselves: `receiveLoop()`'s `connection.receive`
+completion handler, and every `connection.send(..., completion:
+.contentProcessed { ... })` completion handler (`sendPacket`,
+`handleConnectionReady`, `handleConnectResponse`, `handleSequenceHeader`),
+read/mutated shared transport state (`packetStreamReader`, `reader`,
+`writer`, and indirectly the crypto stream's nonce counter) with no check
+that `self.connection` was still the same `NWConnection` instance the
+callback had been registered against. A reconnect (`scheduleReconnect`)
+replaces `connection` with a fresh instance while the old one's in-flight
+receive/send can still complete afterward -- exactly the same
+"unstructured completion racing a torn-down instance" failure mode as
+Mosh's reconnect storm (see the fourth/fifth/sixth real bugs above), just
+on `NWConnection` completions here instead of an unstructured `Task`.
+
+Backgrounding is what reliably triggers the race, even though nothing in
+`ETTransport` is background-aware: the OS suspends the app's process
+entirely while backgrounded, freezing `keepAliveTimer` along with
+everything else. On resume, that timer's very next tick can find
+`waitingOnKeepAlive` still `true` (the prior keepalive's reply is real and
+was already sitting, decrypted-and-waiting, in the kernel's TCP receive
+buffer the whole time, but the process was frozen and never serviced the
+pending `connection.receive` completion to consume it) and calls
+`handleConnectionFailure("missed a keepalive")` -- a spurious reconnect
+that cancels and replaces `connection` while that old, still-pending
+receive completion (carrying genuinely valid ciphertext) can still fire
+afterward. Once delivered late, those leftover bytes got fed into the
+*new* connection's freshly-reset `packetStreamReader`, either
+reconstructing garbage packets from misaligned framing or consuming a
+nonce step the peer never intended for that ciphertext -- either way
+desyncing `ETCryptoStream`'s nonce counter from the server's, so every
+subsequent decrypt (or that one) fails its Poly1305 tag check. A
+plain network blackout (this repo's only previously-tested ET reconnect
+scenario, via `iptables DROP`) never exercises this path, because nothing
+is left buffered-and-undelivered on the client side when packets are
+simply dropped in transit -- only a frozen *process* with data already
+sitting, received, in the kernel socket buffer creates a stale completion
+with real leftover bytes to race against.
+
+Fixed by capturing the registered `NWConnection` instance at the point
+each receive/send is issued (`receiveLoop`'s `registeredConnection`,
+and a new small `sendFramed(_:)` helper used by all four send call
+sites) and guarding the completion handler with
+`registeredConnection === self.connection` before doing anything else --
+a completion whose connection has already been superseded is dropped
+outright rather than processed. Verified with the existing
+`ETTransportTests`/full suite (163 tests) and a clean `xcodebuild` build;
+**not** re-verified against a real backgrounded app hitting a live
+`etserver` (that needs a physical device/TestFlight build, not available
+in this environment) -- if you pick this up next, that's the way to
+confirm the fix rather than just trusting the reasoning above.
+
 ### Still open
 
 - `ETBootstrap`+`ETTransport`'s interaction with `HostKeyStore`/Face ID/
