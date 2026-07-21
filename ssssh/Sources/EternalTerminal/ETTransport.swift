@@ -201,16 +201,33 @@ final class ETTransport: @unchecked Sendable {
         let packet = ETPacket(encrypted: false, header: header.rawValue, payload: payload)
         switch writer.write(packet) {
         case .ready(let bytes):
-            connection.send(content: Data(bytes), completion: .contentProcessed { [weak self] error in
-                guard let self, let error else { return }
-                self.queue.async { self.handleConnectionFailure(reason: "send error: \(error.localizedDescription)") }
-            })
+            sendFramed(bytes)
         case .bufferedOnly, .skipped:
             // Buffered for later delivery (or genuinely dropped once the
             // disconnect cap is hit) -- either way there's no live socket
             // to write to right now.
             break
         }
+    }
+
+    /// Sends already-framed bytes on the current `connection`, reporting a
+    /// failure only if the completion fires while `connection` still *is*
+    /// the instance this send was issued against. A reconnect (triggered by
+    /// `handleConnectionFailure`/a rejected reconnect `ConnectResponse`)
+    /// replaces `connection` with a fresh `NWConnection` while the old one's
+    /// in-flight sends can still complete afterward -- without this check, a
+    /// late failure completion from the superseded connection would call
+    /// `handleConnectionFailure` again and cancel the brand-new reconnect
+    /// attempt it raced against.
+    private func sendFramed(_ bytes: [UInt8]) {
+        let registeredConnection = connection
+        connection.send(content: Data(bytes), completion: .contentProcessed { [weak self] error in
+            guard let self, let error else { return }
+            self.queue.async {
+                guard registeredConnection === self.connection else { return }
+                self.handleConnectionFailure(reason: "send error: \(error.localizedDescription)")
+            }
+        })
     }
 
     // MARK: - Connection lifecycle
@@ -244,10 +261,7 @@ final class ETTransport: @unchecked Sendable {
         request.clientId = id
         request.version = Self.protocolVersion
         let framed = ETOneShotProto.frame(request.encode())
-        connection.send(content: Data(framed), completion: .contentProcessed { [weak self] error in
-            guard let self, let error else { return }
-            self.queue.async { self.handleConnectionFailure(reason: "send error: \(error.localizedDescription)") }
-        })
+        sendFramed(framed)
         receiveLoop()
     }
 
@@ -303,16 +317,36 @@ final class ETTransport: @unchecked Sendable {
     // MARK: - Receiving
 
     private func receiveLoop() {
-        connection.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [weak self] data, _, _, error in
+        // Captured at registration time, not read from `self.connection`
+        // inside the completion handler -- a reconnect (see
+        // `handleConnectionFailure`/`scheduleReconnect`) can replace
+        // `connection` with a fresh `NWConnection` while this receive is
+        // still in flight on the old one. Without this guard, a late
+        // completion delivering the old connection's leftover buffered
+        // bytes would get fed into the *new* connection's freshly-reset
+        // `packetStreamReader`/`reader` -- reconstructing garbage packets
+        // from misaligned framing, or at best consuming a nonce step the
+        // peer never used, either of which corrupts the crypto stream's
+        // nonce sequence and surfaces as `ETSecretBox.OpenError` on this or
+        // every subsequent decrypt. This is the same "unstructured
+        // completion racing a torn-down instance" failure mode documented
+        // for Mosh's reconnect storm and `disconnect()`/`attemptMoshUpgrade`
+        // races in CLAUDE.md -- just on the receive path here instead of a
+        // `Task`.
+        let registeredConnection = connection
+        registeredConnection.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [weak self] data, _, _, error in
             guard let self else { return }
-            if let data, !data.isEmpty {
-                self.queue.async { self.handleIncoming(Array(data)) }
+            self.queue.async {
+                guard registeredConnection === self.connection else { return }
+                if let data, !data.isEmpty {
+                    self.handleIncoming(Array(data))
+                }
+                if let error {
+                    self.handleConnectionFailure(reason: "receive error: \(error.localizedDescription)")
+                    return
+                }
+                self.receiveLoop()
             }
-            if let error {
-                self.queue.async { self.handleConnectionFailure(reason: "receive error: \(error.localizedDescription)") }
-                return
-            }
-            self.receiveLoop()
         }
     }
 
@@ -413,10 +447,7 @@ final class ETTransport: @unchecked Sendable {
             var header = ETSequenceHeader()
             header.sequenceNumber = Int32(truncatingIfNeeded: reader.sequenceNumber)
             let framed = ETOneShotProto.frame(header.encode())
-            connection.send(content: Data(framed), completion: .contentProcessed { [weak self] error in
-                guard let self, let error else { return }
-                self.queue.async { self.handleConnectionFailure(reason: "send error: \(error.localizedDescription)") }
-            })
+            sendFramed(framed)
             oneShotStep = .sequenceHeader
             phase = .awaitingOneShot
         }
@@ -428,10 +459,7 @@ final class ETTransport: @unchecked Sendable {
         var catchup = ETCatchupBuffer()
         catchup.buffer = recoveredMessages
         let framed = ETOneShotProto.frame(catchup.encode())
-        connection.send(content: Data(framed), completion: .contentProcessed { [weak self] error in
-            guard let self, let error else { return }
-            self.queue.async { self.handleConnectionFailure(reason: "send error: \(error.localizedDescription)") }
-        })
+        sendFramed(framed)
         oneShotStep = .catchupBuffer
     }
 
