@@ -20,6 +20,7 @@
 		15F416C6F59FCC426E7A3406 /* MoshTransportTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE7168488C5EDC2F8E0CD38D /* MoshTransportTests.swift */; };
 		1C238A3BEDE2C2FBEB99CD02 /* SSHConnection.swift in Sources */ = {isa = PBXBuildFile; fileRef = C6F1F3497C6EAE8353915767 /* SSHConnection.swift */; };
 		2642117F49E98E090CC06422 /* TerminalTheme.swift in Sources */ = {isa = PBXBuildFile; fileRef = DB5762D5CFBEF2BCFFBA74A2 /* TerminalTheme.swift */; };
+		2972D738189813A40714C0AD /* ETCryptoTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8791387CC5878FFCEF14DDC2 /* ETCryptoTests.swift */; };
 		2AA164B80BDC45B6130B692E /* TerminalViewStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 572153F23C6A8561229486FA /* TerminalViewStoreTests.swift */; };
 		2E8D30E256FA75AF3D8FC5BC /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 98B53E8FB86FC9EA82ED0377 /* PrivacyInfo.xcprivacy */; };
 		31C4DCF5954F9C98F16056D5 /* MoshOCB.swift in Sources */ = {isa = PBXBuildFile; fileRef = 165269207B2F72B8778DBB62 /* MoshOCB.swift */; };
@@ -80,6 +81,7 @@
 		F50C8A51B19787901EFBB983 /* MoshPredictionEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = EAF5AE133A4146C0E485A020 /* MoshPredictionEngine.swift */; };
 		F64B0D111B26E392D2A6E687 /* MoshBootstrap.swift in Sources */ = {isa = PBXBuildFile; fileRef = 658777CC81CDBBB74E488EB6 /* MoshBootstrap.swift */; };
 		F87FE6439D3F6A83D3AE9655 /* MoshMessages.swift in Sources */ = {isa = PBXBuildFile; fileRef = B09EE9290D723E42EAB05386 /* MoshMessages.swift */; };
+		F8C0FA8E928E44CA6246F760 /* ETCrypto.swift in Sources */ = {isa = PBXBuildFile; fileRef = D6EA51B276D3CD2D2162C21F /* ETCrypto.swift */; };
 		FC9E1D71FF618A0E83570671 /* SSHConnectionStateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F38F86FED26BE21AC974655A /* SSHConnectionStateTests.swift */; };
 		FCA28AF3A88F53A80869B452 /* libz.tbd in Frameworks */ = {isa = PBXBuildFile; fileRef = 9B32546EAC5E33C11BDFD1E1 /* libz.tbd */; };
 		FE73E3E94DF05059A4E83BF2 /* SSHPrivateKeyMaterial.swift in Sources */ = {isa = PBXBuildFile; fileRef = A64C9DE84719618DC3BA55D4 /* SSHPrivateKeyMaterial.swift */; };
@@ -135,6 +137,7 @@
 		7E73836E334216FB734F29B0 /* KeyImporter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyImporter.swift; sourceTree = "<group>"; };
 		7EBF63CEE0F3D7B402553292 /* SSHHost.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SSHHost.swift; sourceTree = "<group>"; };
 		804DA5F2C633BB71591F0177 /* MoshCompressionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MoshCompressionTests.swift; sourceTree = "<group>"; };
+		8791387CC5878FFCEF14DDC2 /* ETCryptoTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ETCryptoTests.swift; sourceTree = "<group>"; };
 		896F10A3A80169241CAF0C10 /* SessionsListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionsListView.swift; sourceTree = "<group>"; };
 		8DDB708C5F5E8FDB459230F8 /* HostKeyStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostKeyStoreTests.swift; sourceTree = "<group>"; };
 		9708297D8B2AA5A7FF87992E /* MoshBigEndian.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MoshBigEndian.swift; sourceTree = "<group>"; };
@@ -162,6 +165,7 @@
 		D4DFD72DAE221F922177E14A /* MoshFragment.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MoshFragment.swift; sourceTree = "<group>"; };
 		D58BA79C8440E6A64E069310 /* MoshFragmentTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MoshFragmentTests.swift; sourceTree = "<group>"; };
 		D676E02EEAA0C890942F393E /* JSONFileStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JSONFileStore.swift; sourceTree = "<group>"; };
+		D6EA51B276D3CD2D2162C21F /* ETCrypto.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ETCrypto.swift; sourceTree = "<group>"; };
 		DB5762D5CFBEF2BCFFBA74A2 /* TerminalTheme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalTheme.swift; sourceTree = "<group>"; };
 		E19E2E1689C90CFCEC01B315 /* SSHCopyID.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SSHCopyID.swift; sourceTree = "<group>"; };
 		E3F0F869B595FC2C7C62D82D /* MoshCompression.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MoshCompression.swift; sourceTree = "<group>"; };
@@ -239,6 +243,7 @@
 			isa = PBXGroup;
 			children = (
 				CEDC2DA3BCA582DE739CBA98 /* ETBootstrap.swift */,
+				D6EA51B276D3CD2D2162C21F /* ETCrypto.swift */,
 			);
 			path = EternalTerminal;
 			sourceTree = "<group>";
@@ -288,6 +293,7 @@
 			isa = PBXGroup;
 			children = (
 				9F8DFB813CD93880EFBDF5FF /* ETBootstrapTests.swift */,
+				8791387CC5878FFCEF14DDC2 /* ETCryptoTests.swift */,
 				E82CF65042269BF21437CD15 /* HostKeyFingerprintTests.swift */,
 				8DDB708C5F5E8FDB459230F8 /* HostKeyStoreTests.swift */,
 				E83B2F451E477D4BE69A1E48 /* HostStoreTests.swift */,
@@ -523,6 +529,7 @@
 				E2F40DB983550B8F30D0236E /* CopyKeyToServerView.swift in Sources */,
 				0F1D1B02BEF58C9BD4505839 /* DestructiveConfirmationAlert.swift in Sources */,
 				4A7B5063C9FBC3E169A47F6C /* ETBootstrap.swift in Sources */,
+				F8C0FA8E928E44CA6246F760 /* ETCrypto.swift in Sources */,
 				7EA6B690FF1844EDB40F1B0A /* HostEditView.swift in Sources */,
 				4F79F592283CADCEB8E1CFB6 /* HostKeyConfirmationView.swift in Sources */,
 				3EB6F45B46C155EED4B667A2 /* HostKeyFingerprint.swift in Sources */,
@@ -575,6 +582,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				F4B9E47A974DD2852E2E4219 /* ETBootstrapTests.swift in Sources */,
+				2972D738189813A40714C0AD /* ETCryptoTests.swift in Sources */,
 				37D5E511623C8A86342F7AA9 /* HostKeyFingerprintTests.swift in Sources */,
 				1335786151BC0EFB30F2D43C /* HostKeyStoreTests.swift in Sources */,
 				86BF41EA14F33560DF1D7C54 /* HostStoreTests.swift in Sources */,

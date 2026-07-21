@@ -1162,8 +1162,23 @@ easiest at the time.
 
 Encryption is **libsodium's `crypto_secretbox_easy`/`_open_easy`**
 (`src/base/CryptoHandler.cpp`) -- XSalsa20-Poly1305, 32-byte key, 24-byte
-nonce, 16-byte MAC appended to ciphertext. Confirmed specifics that matter
-for a Swift port:
+nonce.
+
+**Correction, from reading libsodium's own
+`crypto_secretbox/crypto_secretbox_easy.c` directly rather than relying on
+the "MAC appended to ciphertext" assumption originally written here**: the
+16-byte MAC is **prepended**, not appended --
+`crypto_secretbox_easy(c, m, mlen, n, k)` calls
+`crypto_secretbox_detached(c + MACBYTES, c, m, mlen, n, k)`, writing
+ciphertext starting at `c + 16` and the MAC at `c + 0`. Wire layout is
+`MAC(16) || ciphertext(mlen)`, and `ET.swift`'s implementation (see
+"What's implemented" above; a Swift port of the crypto layer beyond
+bootstrap hasn't been written yet as of this note, but whoever writes it
+should start from this corrected layout, not the original wrong one) must
+decrypt accordingly: `mac = buffer[0..<16]`, `ciphertext =
+buffer[16...]`.
+
+Confirmed specifics that matter for a Swift port:
 - **The key is the raw ASCII bytes of the 32-character passkey from
   bootstrap, used directly** -- no HKDF/hash step. `crypto_secretbox_KEYBYTES`
   is 32 and the passkey is exactly 32 alphanumeric characters, so the
@@ -1352,21 +1367,41 @@ SwiftProtobuf).
 verified against a real `etserver`/`etterminal` 7.0.0 (see "What's
 implemented" above), so "this host doesn't have `etserver` running" is
 already a clear, expected error rather than a cryptic connection failure.
+
+**The packet crypto is done too** -- `ssssh/Sources/EternalTerminal/ETCrypto.swift`
+implements XSalsa20-Poly1305 from scratch (`SalsaPermutation`/`Salsa20Core`/
+`HSalsa20Core` mirror libsodium's `crypto_core_salsa20`/`crypto_core_hsalsa20`
+reference C line-for-line; `Poly1305` is a direct 32-bit port of the
+canonical public-domain `poly1305-donna-32.h`; `ETSecretBox` composes them
+into the exact `crypto_secretbox_easy`/`_open_easy` construction; `ETCryptoStream`
+mirrors `CryptoHandler`'s stateful nonce-increment-before-use behavior), and
+is verified in `ETCryptoTests` against a real known-answer vector pulled
+directly from libsodium's own `test/default/secretbox.c`/`secretbox.exp`
+(re-sliced from the old BOXZEROBYTES-prefixed API layout into the `_easy`
+MAC-prepended layout this type actually implements -- see the correction
+in "Wire framing and crypto" above for why that layout matters), not just
+internal round-trip self-consistency. That vector's 131-byte message spans
+more than one 64-byte Salsa20 block, exercising the block-counter
+increment; dedicated tests separately cover the empty-message and
+exact-16-byte-message edge cases in Poly1305's block/no-block-leftover
+logic, tamper rejection (both a flipped ciphertext byte and a flipped MAC
+byte), and `ETCryptoStream`'s writer/reader lockstep plus its rejection of
+a desynced reader. Prototyped and iterated against these vectors in a
+throwaway SwiftPM sandbox before landing in the Xcode project, the same
+fast-iteration approach worth reaching for again for the remaining pieces
+below rather than iterating via full `xcodebuild` runs.
+
 What's next, in the order this section originally intended (wire protocol
 only, nothing UI/integration-level yet):
-1. The XSalsa20-Poly1305 packet crypto (`CryptoHandler.cpp`'s exact
-   framing -- see "Wire framing and crypto" above), verified the same way
-   `MoshOCB` was: against known-answer test vectors, not just internal
-   consistency between this app's own encrypt/decrypt.
-2. The 4-byte-length-prefixed `Packet` framing and the protobuf message
+1. The 4-byte-length-prefixed `Packet` framing and the protobuf message
    shapes (`proto/ET.proto`/`proto/ETerminal.proto`) -- decide
    hand-rolled-with-map-support vs. SwiftProtobuf here rather than
    defaulting to whichever seems easiest mid-implementation.
-3. The sequence-numbered resend/replay buffer described in "Resumption/
+2. The sequence-numbered resend/replay buffer described in "Resumption/
    reconnect protocol" above.
-4. Only after 1-3 are independently verified: a real `NWConnection`-based
-   `ETTransport` wiring them together, verified against the same live
-   `etserver` container `ETBootstrap` already proved out, the same
+3. Only after 1-2 are independently verified: a real `NWConnection`-based
+   `ETTransport` wiring them together with `ETCrypto`, verified against the
+   same live `etserver` container `ETBootstrap` already proved out, the same
    incremental "verify each piece against ground truth before composing
    them" discipline the Mosh implementation followed throughout this file.
 
