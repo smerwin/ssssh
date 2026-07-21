@@ -1428,21 +1428,47 @@ length prefix before waiting for data that would never arrive. This layer
 is deliberately independent of what's inside `payload` -- it doesn't know
 or care that real payloads are protobuf-encoded.
 
+**The protobuf message layer is done too** -- decided
+hand-rolled-with-map-support-deferred, not SwiftProtobuf: reading the
+actual field lists needed for a first-pass terminal session
+(`ConnectRequest`/`ConnectResponse`, `TerminalUserInfo`, `TermInit`,
+`TerminalBuffer`, `TerminalInfo`) showed none of them need
+`map<string, string>` -- the one message that does, `InitialPayload`, is
+only used for jumphost/port-forward setup, already out of this pass's
+scope. `ssssh/Sources/EternalTerminal/ETProtobuf.swift` is a from-scratch
+reader/writer (varint + length-delimited only, same shape as
+`MoshProtobuf` but deliberately not shared code -- see its doc comment
+for why), with `ETMessages.swift` building the six message types plus
+`ETPacketHeader`, a single `UInt8` enum unifying `EtPacketType`'s
+252-254 range and `TerminalPacketType`'s 0-10 range into the one
+namespace `Packet.header` actually occupies on the wire (the two proto
+enums are numbered to never collide, by design, per `EtPacketType`'s own
+"count down from 254 to avoid collisions" source comment).
+
+Verified against **real `protoc --encode`/`--decode` output** (protoc
+35.1, run directly against ET's actual `.proto` files fetched from
+upstream), not just internal round-trip consistency -- e.g.
+`echo 'clientId: "hi" version: 3' | protoc --encode=et.ConnectRequest ET.proto | xxd`
+compared byte-for-byte against this Swift encoder's output.
+`ETMessagesTests` covers all six message types this way, including the one
+tricky case worth calling out: proto2's plain (non-zigzag) `int64`
+encodes a negative value (`TerminalUserInfo.uid = -1` in the test) as the
+full 10-byte sign-extended varint, not a compact zigzag encoding --
+verified against protoc's real output for that exact case, not assumed
+from the spec. Also includes a hardening test mirroring `MoshProtobuf`'s
+own (an oversized length-delimited field must be rejected before
+`Int(length)` ever gets a chance to trap on a value near `UInt64.max`).
+
 What's next, in the order this section originally intended (wire protocol
 only, nothing UI/integration-level yet):
-1. The protobuf message shapes (`proto/ET.proto`/`proto/ETerminal.proto`,
-   9 `TerminalPacketType` values -- see the correction above for the exact
-   count and which are unused) -- decide hand-rolled-with-map-support vs.
-   SwiftProtobuf here rather than defaulting to whichever seems easiest
-   mid-implementation.
-2. The sequence-numbered resend/replay buffer described in "Resumption/
+1. The sequence-numbered resend/replay buffer described in "Resumption/
    reconnect protocol" above.
-3. Only after 1-2 are independently verified: a real `NWConnection`-based
-   `ETTransport` wiring `ETPacket`/`ETPacketStreamReader`/`ETCrypto`/the
-   resend buffer together, verified against the same live `etserver`
-   container `ETBootstrap` already proved out, the same incremental
-   "verify each piece against ground truth before composing them"
-   discipline the Mosh implementation followed throughout this file.
+2. Only after 1 is independently verified: a real `NWConnection`-based
+   `ETTransport` wiring `ETPacket`/`ETPacketStreamReader`/`ETCrypto`/
+   `ETMessages`/the resend buffer together, verified against the same live
+   `etserver` container `ETBootstrap` already proved out, the same
+   incremental "verify each piece against ground truth before composing
+   them" discipline the Mosh implementation followed throughout this file.
 
 ## TestFlight release notes
 
