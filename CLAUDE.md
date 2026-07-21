@@ -948,14 +948,17 @@ verified here the same way CLAUDE.md's SSH section recommends for
 Process/NSTask: a standalone macOS SwiftPM executable importing the same
 Mosh sources and Citadel, not an iOS Simulator XCTest.
 
-## Eternal Terminal support (not started -- investigation notes)
+## Eternal Terminal support (bootstrap detection implemented -- wire protocol not started)
 
-Nobody has written any code for this yet. This is a scoping writeup from
-source research, kept here so a future session doesn't have to re-derive
-it -- treat it as a starting point, not a finished design. Every claim
-below is cited against `MisterTea/EternalTerminal`'s actual source (its
-`src/` and `proto/` directories), the same way the Mosh section above is
-grounded in `mobile-shell/mosh`'s source rather than general knowledge.
+This started as a scoping writeup from source research; most of it below is
+still exactly that (a starting point, not a finished design), but
+`ssssh/Sources/EternalTerminal/ETBootstrap.swift` now implements and
+verifies the detection/bootstrap half described in "Bootstrap flow" below
+-- see "What's implemented" immediately after the bottom-line paragraph for
+what exists today and how it was verified. Every claim below is cited
+against `MisterTea/EternalTerminal`'s actual source (its `src/` and
+`proto/` directories), the same way the Mosh section above is grounded in
+`mobile-shell/mosh`'s source rather than general knowledge.
 
 **Bottom line**: ET's wire protocol is *architecturally simpler* to
 reimplement than Mosh's -- a reliable-byte-stream resume over TCP, not a
@@ -968,6 +971,82 @@ support in this app will only ever work against hosts that already have
 "Server-side prerequisites" below for why, and why the alternative
 (ssssh installing and launching a persistent daemon on someone else's
 host) was rejected rather than pursued.
+
+### What's implemented
+
+`ETBootstrap.detect(host:port:client:)` implements the full client-side
+bootstrap handshake described in "Bootstrap flow" below: `ping(host:port:)`
+does the bare TCP connect-then-close check via `NWConnection` (mirroring
+`et`'s own `ping()` exactly, including running *before* SSH is touched at
+all), then it generates a 16-char id / 32-char passkey with the same
+`'X','X','X'`-prefix mangling `SetupSsh` does, runs `echo
+'<id>/<passkey>_<clientTerm>' | etterminal --verbose=0` over the given
+already-authenticated `Citadel.SSHClient`, and parses the `IDPASSKEY:`
+reply with the same **fixed-width substring** approach the real client
+uses (`16 + 1 + 32` characters right after the marker, split on `/`) rather
+than scanning for a delimiter-terminated line -- see the doc comment on
+`ETBootstrap` for the correction this was grounded against (an earlier pass
+through this file had summarized both the mangling and the parsing
+imprecisely; reading `SshSetupHandler.cpp`'s `SetupSsh` and
+`TerminalMain.cpp` directly caught it before it became a real bug).
+
+This only gets as far as detection/registration -- it does not open the
+ET-protocol TCP connection, implement its XSalsa20-Poly1305 framing, or
+hand the terminal's data path over to it. That's the "Recommended scope
+for a first pass" below, deliberately not attempted yet.
+
+**Verified end-to-end against a real `etserver`, not just unit-tested
+against synthetic strings.** Alpine (this repo's usual throwaway SSH
+container base -- see "Manual verification against a real SSH server"
+below) has no `eternalterminal` package in its repos; `debian:bookworm-slim`
+does, via the project's own documented apt repo:
+
+```
+mkdir -m 0755 -p /etc/apt/keyrings
+echo "deb [signed-by=/etc/apt/keyrings/et.gpg] https://mistertea.github.io/debian-et/debian-source/ bookworm main" \
+  > /etc/apt/sources.list.d/et.list
+curl -sSL https://github.com/MisterTea/debian-et/raw/master/et.gpg -o /etc/apt/keyrings/et.gpg
+apt-get update && apt-get install -y et
+```
+
+(Only `bookworm` and `trixie` are published under that repo's `dists/` --
+`jammy`/`focal`/`noble`/`bullseye` all 404, so an Ubuntu-based container
+won't work here without building from source.) With `et` 7.0.0 installed,
+`etserver --daemon --pidfile=/var/run/etserver.pid` started successfully
+and bound port 2022, and a manual `ssh ... "echo '...' | etterminal
+--verbose=0"` round trip surfaced a genuine finding beyond what reading the
+source alone caught: **the first manual test, sending only `<id>/<passkey>`
+with no `_<clientTerm>` suffix, made `etterminal` abort with `STFATAL
+"Invalid number of tokens: 1"`** (`TerminalMain.cpp` splits stdin on `_`
+and requires exactly 2 tokens) -- confirming the `_<clientTerm>` suffix
+isn't optional cosmetic detail, `etterminal` hard-crashes without it. Once
+sent correctly, the real reply
+(`IDPASSKEY:rHQ8Y9jVVf95KHHg/HYsIIjMJ9NMVxO0ec0wNzCcLc0qOEp0v`) confirmed
+three things at once: the 49-character fixed-width assumption is exactly
+right against the real binary (`len(id)==16`, `len(passkey)==32`,
+confirmed by direct measurement, not eyeballing); the server actually does
+regenerate the whole id/passkey pair when it sees the client's `XXX`-prefixed
+proposal (`TerminalMain.cpp`'s `idpasskey.substr(0, 3) == "XXX"` branch),
+i.e. `ETBootstrap.Result` reporting back whatever the parsed reply contains
+-- never assuming it matches what was sent -- is the only correct approach,
+not a defensive-but-unnecessary extra step; and a real `etterminal` prints
+warning noise before its `IDPASSKEY:` line the same way `mosh-server` does
+(here, a `setlocale` warning), which is exactly the "tolerates surrounding
+banner text" case `ETBootstrapTests` already covers.
+
+The full path was then re-verified through `ETBootstrap.detect` itself
+(not just the parser), the same way the Mosh section's "Verifying against a
+real mosh-server" describes: a standalone macOS SwiftPM executable
+depending directly on Citadel 0.12.1 (this repo's actual pinned version,
+per `Package.resolved`), with `ETBootstrap.swift` copied in as a source
+file, connecting over real SSH (`Citadel.SSHClient.connect(host:port:
+authenticationMethod:hostKeyValidator:reconnect:)`,
+`.passwordBased(username:password:)`, `.acceptAnything()` for the
+throwaway container's host key) and calling `ETBootstrap.detect(host:
+"127.0.0.1", port: 2022, client:)` directly. It returned a genuine,
+freshly server-generated id/passkey pair end-to-end, confirming `ping`,
+the SSH-run bootstrap command, and the parser all compose correctly against
+live infrastructure, not just against each other in isolation.
 
 ### Bootstrap flow -- and why it's fundamentally different from Mosh's
 
@@ -984,11 +1063,25 @@ of entropy) and runs, over the existing trusted SSH connection:
 echo '<id>/<passkey>_<clientTerm>' | etterminal --verbose=<v> [--serverfifo=...]
 ```
 
-`etterminal`'s stdout is scanned for a line containing `IDPASSKEY:`; the
-`id/passkey` substring after it is parsed out (a newer server can
-override the client-proposed id/passkey with its own -- the client
-deliberately mangles its own proposed id's first two characters to signal
-"I'm willing to accept a server-generated one instead").
+**Correction to this paragraph, confirmed by reading the actual source
+(`SshSetupHandler.cpp`'s `SetupSsh`) rather than relying on the summary
+originally written here**: the client does not scan for *a line*
+containing `IDPASSKEY:` -- it does `sshBuffer.find("IDPASSKEY:")` over the
+whole buffer, then takes a **fixed-width substring**: exactly `16 + 1 +
+32` (49) characters starting right after that 10-character marker, split
+on `/`. This assumes the server's returned id is also exactly 16
+characters (it doesn't re-measure), so a Swift port must mirror the fixed
+width, not search for a delimiter-terminated line. And the "mangling" is
+not a two-character signal-encoding scheme -- it's simpler and dumber
+than that: `SetupSsh` unconditionally overwrites the **first three**
+characters of its freshly-generated 16-char id with the literal characters
+`'X'`, `'X'`, `'X'` (`id[0] = id[1] = id[2] = 'X'`), with a comment
+calling this "for compatibility with old servers that do not generate
+their own keys" -- not a flag a newer server inspects to decide whether to
+substitute its own id, just a fixed, always-applied prefix. A newer server
+*can* still override the whole id/passkey pair in its `IDPASSKEY:` reply
+regardless of what the client sent; the client only ever reports back
+whatever the parsed reply actually contains.
 
 **The critical difference from Mosh**: `etterminal`, run per-session over
 SSH, is *not* a self-contained server-per-session process the way
@@ -1228,13 +1321,13 @@ part of an ET integration bolts onto the existing
   tuning was spotted in the reference `TcpSocketHandler` during this
   research pass, but that pass didn't dig deep into keepalive/`TCP_NODELAY`
   specifics -- worth a dedicated check before implementing.
-- **Verification story**: no `Process`/`NSTask` dependency once bootstrap
-  is done (unlike some Mosh-adjacent tooling concerns), so the same
-  "standalone macOS SwiftPM executable" pattern this repo already uses to
-  verify Mosh against a real `mosh-server` (see "Verifying against a real
-  mosh-server" above) applies here too, against a real `etserver` --
-  installed via Docker the same way the Mosh/SSH verification containers
-  are, not yet set up.
+- **Verification story**: resolved for the bootstrap half -- see "What's
+  implemented" above for the Docker/Debian-repo setup and the standalone
+  SwiftPM executable pattern, both now proven out end-to-end. The same
+  container (with `etserver` running as a daemon) should still work for
+  verifying the wire-protocol work once it exists, but that verification
+  itself -- a real TCP session actually exchanging encrypted terminal I/O
+  -- hasn't been attempted, only the bootstrap that precedes it.
 - **Port-forwarding / jumphost / SSH-agent-forwarding** (`-t`, `-r`,
   `--jumphost`, `-f` in the reference client) are out of scope for a first
   pass -- this app has no port-forwarding UI at all today. Flagging only
@@ -1252,11 +1345,30 @@ engine -- just TCP framing, one from-scratch crypto primitive
 (XSalsa20-Poly1305, decided deliberately per "Wire framing and crypto"
 above), a small sequence-numbered resend buffer, and protobuf message
 plumbing (also decided deliberately: hand-rolled-with-map-support vs.
-SwiftProtobuf). A first pass should build detection first --
-`ETBootstrap.detect`, mirroring `MoshBootstrap.detect`'s shape and
-failure-surfacing -- so "this host doesn't have `etserver` running" is a
-clear, expected message rather than a cryptic connection failure, before
-any wire-protocol code is written at all.
+SwiftProtobuf).
+
+**Detection is done** -- `ETBootstrap.detect`, mirroring
+`MoshBootstrap.detect`'s shape and failure-surfacing, exists and is
+verified against a real `etserver`/`etterminal` 7.0.0 (see "What's
+implemented" above), so "this host doesn't have `etserver` running" is
+already a clear, expected error rather than a cryptic connection failure.
+What's next, in the order this section originally intended (wire protocol
+only, nothing UI/integration-level yet):
+1. The XSalsa20-Poly1305 packet crypto (`CryptoHandler.cpp`'s exact
+   framing -- see "Wire framing and crypto" above), verified the same way
+   `MoshOCB` was: against known-answer test vectors, not just internal
+   consistency between this app's own encrypt/decrypt.
+2. The 4-byte-length-prefixed `Packet` framing and the protobuf message
+   shapes (`proto/ET.proto`/`proto/ETerminal.proto`) -- decide
+   hand-rolled-with-map-support vs. SwiftProtobuf here rather than
+   defaulting to whichever seems easiest mid-implementation.
+3. The sequence-numbered resend/replay buffer described in "Resumption/
+   reconnect protocol" above.
+4. Only after 1-3 are independently verified: a real `NWConnection`-based
+   `ETTransport` wiring them together, verified against the same live
+   `etserver` container `ETBootstrap` already proved out, the same
+   incremental "verify each piece against ground truth before composing
+   them" discipline the Mosh implementation followed throughout this file.
 
 ## TestFlight release notes
 
