@@ -42,6 +42,10 @@ final class ETTransport: @unchecked Sendable {
         /// crash, same reasoning as `ETBackedWriter.RecoverError.peerAheadOfSelf`.
         case unknownPacketHeader(UInt8)
         case reconnectRejected(status: ETConnectStatus?, message: String)
+        /// After `maxConsecutiveReconnectFailures` back-to-back rejected/
+        /// failed reconnect attempts, same shape as `MoshTransportError
+        /// .roamingGaveUp`.
+        case reconnectGaveUp(reason: String)
 
         var errorDescription: String? {
             switch self {
@@ -55,6 +59,8 @@ final class ETTransport: @unchecked Sendable {
                 return "Eternal Terminal server sent an unrecognized packet type: \(header)"
             case .reconnectRejected(let status, let message):
                 return "Eternal Terminal reconnect rejected (\(String(describing: status)): \(message))"
+            case .reconnectGaveUp(let reason):
+                return "Eternal Terminal gave up reconnecting after \(ETTransport.maxConsecutiveReconnectFailures) attempts (\(reason))"
             }
         }
     }
@@ -98,6 +104,42 @@ final class ETTransport: @unchecked Sendable {
     private var isStopped = false
     private var keepAliveTimer: DispatchSourceTimer?
     private var waitingOnKeepAlive = false
+
+    /// Counts consecutive failed *reconnect* attempts -- both an ordinary
+    /// connection-level failure (`.failed` state, a send/receive error) and
+    /// a rejected reconnect `ConnectResponse` (see `handleConnectResponse`)
+    /// feed into this same counter. Reported live, against a real wifi/5G
+    /// interface handoff: the very first reconnect attempt after the
+    /// handoff got a `ConnectResponse` rejecting it with `invalidKey`
+    /// ("Client is not registered") -- previously treated identically to a
+    /// rejected *first* connect (immediately fatal, no retry at all). Real
+    /// `etserver` deployment/timeout characteristics under a genuine
+    /// interface change (as opposed to this repo's only verified scenario,
+    /// an `iptables DROP` blackout that never changes the client's local
+    /// address) haven't been characterized -- see CLAUDE.md's Eternal
+    /// Terminal section -- so a rejection shortly after a handoff might be
+    /// transient (the server catching up) or might be permanent. Retrying
+    /// with backoff costs nothing in the permanent case (a few extra
+    /// seconds before the same eventual failure) and recovers the session
+    /// in the transient case, instead of always tearing down a session that
+    /// might still be resumable.
+    private var consecutiveReconnectFailures = 0
+    /// Mirrors `MoshTransport.maxConsecutiveRebuildFailures` -- after this
+    /// many back-to-back failures, stop retrying and report a hard failure
+    /// via `onError` instead of retrying forever against a genuinely dead
+    /// network or a permanently unrecognized client id.
+    private static let maxConsecutiveReconnectFailures = 5
+    /// Unlike `MoshTransport.rebuildBackoff` (paired with a periodic
+    /// heartbeat/path-monitor drumbeat that keeps re-triggering rebuilds,
+    /// so a plain gate-and-return works), `ETTransport` has no equivalent
+    /// steady stream of external triggers while disconnected -- so the
+    /// delay is scheduled directly (`queue.asyncAfter`) rather than gating
+    /// on a `nextAllowedRebuildAttempt` timestamp. The very first attempt
+    /// after any failure stays immediate (the common roaming case, same
+    /// reasoning as Mosh's), then backs off exponentially, capped at 30s.
+    static func reconnectBackoff(forFailureCount count: Int) -> TimeInterval {
+        count <= 1 ? 0 : min(pow(2.0, Double(count - 1)), 30)
+    }
 
     init(host: String, port: UInt16, id: String, passkeyBytes: [UInt8]) {
         self.host = .init(host)
@@ -224,9 +266,29 @@ final class ETTransport: @unchecked Sendable {
         writer.revive(connected: false)
         connection.stateUpdateHandler = nil
         connection.cancel()
-        connection = NWConnection(host: host, port: port, using: .tcp)
-        armConnection(isReconnect: true)
-        connection.start(queue: queue)
+        scheduleReconnect(reason: reason)
+    }
+
+    /// Bumps the failure count, gives up (via `reportFatalError`) once
+    /// `maxConsecutiveReconnectFailures` is exceeded, and otherwise opens a
+    /// fresh `NWConnection` after `reconnectBackoff`'s delay. Shared by
+    /// `handleConnectionFailure` (a connection-level failure) and
+    /// `handleConnectResponse`'s rejection branch (an application-level
+    /// rejection of a reconnect attempt) -- both are just different ways a
+    /// reconnect attempt can fail, and both deserve the same bounded retry.
+    private func scheduleReconnect(reason: String) {
+        consecutiveReconnectFailures += 1
+        if consecutiveReconnectFailures > Self.maxConsecutiveReconnectFailures {
+            reportFatalError(TransportError.reconnectGaveUp(reason: reason))
+            return
+        }
+        let delay = Self.reconnectBackoff(forFailureCount: consecutiveReconnectFailures)
+        queue.asyncAfter(deadline: .now() + delay) { [weak self] in
+            guard let self, !self.isStopped, !self.hasReportedFatalError else { return }
+            self.connection = NWConnection(host: self.host, port: self.port, using: .tcp)
+            self.armConnection(isReconnect: true)
+            self.connection.start(queue: self.queue)
+        }
     }
 
     /// Not `private` so it's directly testable without needing a live
@@ -295,7 +357,22 @@ final class ETTransport: @unchecked Sendable {
     private func handleConnectResponse(_ payload: [UInt8]) throws {
         let response = try ETConnectResponse.decode(payload)
         guard response.status == .newClient || response.status == .returningClient else {
-            throw TransportError.connectResponseRejected(status: response.status, message: response.error)
+            guard reader != nil, writer != nil else {
+                // Rejected on the very first connect -- nothing to recover,
+                // this is a hard failure (bad id/passkey, incompatible
+                // server) not worth retrying.
+                throw TransportError.connectResponseRejected(status: response.status, message: response.error)
+            }
+            // Rejected on a *reconnect* -- see `consecutiveReconnectFailures`'
+            // doc comment for why this is retried with backoff instead of
+            // torn down immediately.
+            keepAliveTimer?.cancel()
+            keepAliveTimer = nil
+            writer.revive(connected: false)
+            connection.stateUpdateHandler = nil
+            connection.cancel()
+            scheduleReconnect(reason: "reconnect rejected (\(response.status.map { String(describing: $0) } ?? "nil")): \(response.error)")
+            return
         }
 
         if reader == nil || writer == nil {
@@ -416,6 +493,12 @@ final class ETTransport: @unchecked Sendable {
     }
 
     private func signalEstablished() {
+        // A real success (first connect or a completed reconnect) means
+        // whatever's currently happening network-wise genuinely works --
+        // reset the failure count so it only ever measures *consecutive*
+        // reconnect failures, not ones accumulated earlier in a long
+        // session with multiple, unrelated roams.
+        consecutiveReconnectFailures = 0
         hasSignaledEstablishedOnce = true
         onEstablished?()
     }

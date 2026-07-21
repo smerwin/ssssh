@@ -1656,15 +1656,90 @@ only been verified by code review, not by tapping through the app itself.
 If you pick this up next, that's the first thing worth doing by hand in
 the Simulator or on a device before trusting this integration further.
 
+### A real-world bug report: a wifi/5G toggle killed a live ET session with "Client is not registered"
+
+The exact gap the "Still open" item below used to flag as untested --
+what happens to a live `ETTransport` session across a real interface
+handoff, as opposed to this repo's only verified scenario (an `iptables
+DROP` blackout that never changes the client's local address) -- showed
+up as a real user report: toggling wifi/5G produced
+`Eternal Terminal session error: Eternal Terminal connection rejected
+(Optional(ssssh.ETConnectStatus.invalidKey): Client is not registered)`,
+and the whole session (SSH + ET) was torn down.
+
+Reading `ETTransport`'s reconnect path (`handleConnectionFailure`,
+`handleConnectResponse`) explains why: once a live session's underlying
+`NWConnection` fails, it reconnects by opening a fresh `NWConnection` and
+resending `ConnectRequest` with the *same* client id (correct -- crypto
+state and sequence numbers persist across a reconnect, only the socket
+association changes, see "Resumption/reconnect protocol" above). But if
+`etserver` responds to that reconnect's `ConnectResponse` with anything
+other than `newClient`/`returningClient`, the old code treated it exactly
+like a rejected *first* connect: immediately fatal, via
+`reportFatalError`, no retry at all. There was no report available of
+*why* the real server rejected it (this environment has no way to
+reproduce a genuine wifi/5G handoff -- no physical device, and Docker's
+`iptables DROP` doesn't change the client's local address the way a real
+handoff does, so the actual `etserver`-side timeout/eviction behavior
+under a genuine interface change remains uncharacterized) -- but whether
+the rejection was transient (the server hadn't caught up with the
+client's new address yet) or permanent, tearing down an otherwise-healthy
+session on the very first rejected reconnect attempt was never the right
+call either way.
+
+Fixed by giving a rejected *reconnect* (as opposed to a rejected first
+connect, which stays immediately fatal -- that's a real
+misconfiguration/incompatibility, not something retrying helps)
+`maxConsecutiveReconnectFailures` (5) bounded retries with backoff before
+giving up, mirroring `MoshTransport.rebuildConnection`'s already-proven
+pattern for the identical problem in Mosh's UDP roaming. Both an
+ordinary connection-level failure (`.failed` state, a send/receive error)
+and an application-level rejected `ConnectResponse` now funnel into the
+same `scheduleReconnect(reason:)`, and the failure count resets on any
+genuine success (`signalEstablished()`). One deliberate difference from
+Mosh's version: `MoshTransport.rebuildBackoff` gates retries behind a
+`nextAllowedRebuildAttempt` timestamp and relies on its own periodic
+heartbeat/path-monitor callbacks to organically re-trigger a rebuild once
+that gate opens; `ETTransport` has no equivalent steady drumbeat of
+external triggers while disconnected, so `ETTransport.reconnectBackoff`
+schedules its own delayed retry directly via `queue.asyncAfter` instead
+of gating and waiting for something else to call it again. The first
+retry after any failure stays immediate either way (0s for count 1), then
+backs off exponentially, capped at 30s.
+
+**This has only been verified as a static/logic change** (a clean
+`xcodebuild` build, the full test suite including two new
+`ETTransportTests` cases for `reconnectBackoff`'s growth/cap, matching
+the style of `MoshTransportTests.rebuildBackoffGrowsAndCaps`) -- **not**
+against a real `etserver` reconnect rejection, since reproducing one
+needs either a real wifi/5G handoff on a physical device or knowledge of
+exactly what makes a real server reject a reconnect, neither available in
+this environment. If you can reproduce the original report (a physical
+device, toggling wifi/cellular mid-ET-session against a real `etserver`),
+that's the next thing worth doing -- confirm the retry actually recovers
+the session rather than just delaying the same eventual failure by up to
+~30 seconds, and if it turns out the rejection is *always* permanent for
+this failure mode, consider whether `attemptETUpgrade`'s existing
+fallback (tearing down and letting `SessionManager.reconnectWithBackoff`
+open a whole fresh SSH connection + fresh `ETBootstrap.detect` bootstrap,
+i.e. a new session with a new id/passkey) should trigger sooner instead
+of spending the full retry budget on an id the server will never
+recognize again.
+
 ### Still open
 
 - `ETBootstrap`+`ETTransport`'s interaction with `HostKeyStore`/Face ID/
   background execution -- entirely unexamined, unlike Mosh's dedicated
   investigation of each.
 - Real Wi-Fi-to-cellular handoff and iOS background-suspension behavior
-  for a live `NWConnection`-based TCP session -- only an induced Docker
-  network blackout has been tested, the same caveat Mosh's own roaming
-  section carries for its UDP transport.
+  for a live `NWConnection`-based TCP session against a real `etserver`
+  -- see "A real-world bug report" above for what's now known (a
+  reconnect can be rejected with `invalidKey`, now retried with backoff)
+  and what's still unverified (whether the retry actually recovers a
+  real session, and the real server's exact eviction/timeout behavior
+  under a genuine interface change). Only an induced Docker network
+  blackout (no address change) has been tested end-to-end, the same
+  caveat Mosh's own roaming section carries for its UDP transport.
 - `ETTransport`'s fixed 5-second keepalive interval (`MAX_CLIENT_KEEP_ALIVE_DURATION`,
   matching the real client's own default) hasn't been tuned or tested
   against a slow/high-latency link, the same open item Mosh's constants
