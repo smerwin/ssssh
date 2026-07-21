@@ -948,18 +948,20 @@ verified here the same way CLAUDE.md's SSH section recommends for
 Process/NSTask: a standalone macOS SwiftPM executable importing the same
 Mosh sources and Citadel, not an iOS Simulator XCTest.
 
-## Eternal Terminal support (wire protocol complete and live-verified -- no UI/integration work started)
+## Eternal Terminal support (wire protocol complete and live-verified; wired into SSHConnection, not yet tap-tested through the app's UI)
 
 This started as a scoping writeup from source research. The wire protocol
 it scoped is now fully implemented in `ssssh/Sources/EternalTerminal/`
 (`ETBootstrap`, `ETCrypto`, `ETPacket`, `ETMessages`, `ETBackedIO`,
 `ETTransport`) and verified end-to-end against a real, unmodified
 `etserver` -- see each subsection's "What's implemented" note for what
-exists and how it was verified, and "Still open" at the end of this
-section for what remains (entirely UI/integration work: wiring
-`ETTransport` into a live session the way `SSHConnection`/`MoshTransport`
-already are, host-key/Face ID/background-execution behavior, and real
-network-handoff testing beyond an induced Docker blackout). Every claim
+exists and how it was verified. `ETTransport` is also now wired into
+`SSHConnection`'s live connect flow behind a Settings toggle, mutually
+exclusive with the existing Mosh toggle -- see "UI integration" and
+"Still open" near the end of this section for exactly what that covers
+and, importantly, what about it still hasn't been verified by actually
+tapping through the app (only by code review and the standalone
+`ETTransport` verification above). Every claim
 below is cited against `MisterTea/EternalTerminal`'s actual source (its
 `src/` and `proto/` directories), the same way the Mosh section above is
 grounded in `mobile-shell/mosh`'s source rather than general knowledge --
@@ -1606,18 +1608,56 @@ path in `ETTransport`, re-verify it this same way -- against a real
 blackout, not just by re-reading the code -- since this exact class of
 ordering mistake passed every other check available.
 
+### UI integration -- wired into SSHConnection, mutually exclusive with Mosh
+
+`ETTransport` is now wired into `SSHConnection.runSession` the same way
+`MoshTransport` is: a settings toggle ("Auto-Upgrade to Eternal Terminal",
+`SettingsView`/`AppSettingsKeys.autoUpgradeToET`) gates an upgrade attempt
+that races against a speculative plain-SSH PTY channel opened on the same
+`client` (see the Concurrency architecture section above for why that race
+exists at all). **Correction to this section's own earlier assumption**:
+it previously guessed ET's bootstrap "doesn't obviously need a race the way
+Mosh's does" -- wrong. `ETBootstrap.detect` is itself an SSH round trip
+(the `etterminal` exec) plus a TCP ping, and `ETTransport`'s
+`onEstablished` only fires after a *further* TCP handshake and two full
+protocol round trips (`ConnectRequest`/`ConnectResponse`, then
+`InitialPayload`/`InitialResponse`) -- strictly more latency than Mosh's
+single-UDP-packet confirm, so skipping the race and gating the PTY on this
+outcome would have made every ET-enabled connection slower than plain SSH
+whenever ET turned out to be unavailable. It races exactly like Mosh does,
+just with a longer confirmation timeout (`etConfirmationTimeout` = 4s vs.
+`moshConfirmationTimeout` = 2s, reasoned through in its own doc comment)
+to account for that extra round-trip cost.
+
+**Auto-Upgrade to Mosh and Auto-Upgrade to Eternal Terminal are mutually
+exclusive in `SettingsView`** -- turning one on turns the other off
+(`.onChange` on each `@AppStorage` binding) -- because `runSession` only
+ever attempts one upgrade path per connection (`UpgradeMode` picks
+whichever toggle is on, or neither); the exclusivity lives in the UI
+because there'd otherwise be no way to express "both happen to be on" as
+anything other than silent, unexplained precedence. `HandoffOutcome.moshWon`
+was renamed to `upgradeWon` and the race's internal `RaceEvent`/messaging
+generalized (see `attemptETUpgrade`, added alongside the existing
+`attemptMoshUpgrade`) rather than duplicating the whole race loop for a
+second transport.
+
+**Verified**: full unit test suite (161 tests) and a clean `xcodebuild`
+build with the new toggle/wiring in place; the app was launched in the iOS
+Simulator to confirm it still starts and renders normally with these
+changes present. **Not verified, and worth being explicit about rather
+than claiming otherwise**: this session had no tap-driven UI automation
+tool available for the iOS Simulator (unlike the Chrome extension used for
+web work) -- AppleScript/System Events control of `Simulator.app` was
+attempted and failed (no accessibility automation permission available in
+this environment) -- so the mutual-exclusivity toggle behavior and a live
+Eternal Terminal session driven through the app's actual UI (as opposed to
+`ETTransport` alone, already proven in the standalone SwiftPM sandbox) have
+only been verified by code review, not by tapping through the app itself.
+If you pick this up next, that's the first thing worth doing by hand in
+the Simulator or on a device before trusting this integration further.
+
 ### Still open
 
-Everything above is the wire protocol only -- **no UI/integration work has
-been done or attempted**, matching this section's scope throughout. Before
-`ETTransport` could back a live terminal session in this app the way
-`SSHConnection`/`MoshTransport` do today:
-- Wiring `ETTransport` into `SSHConnection`'s connect flow (or a sibling
-  path) the way Mosh's handoff race works (see the Concurrency
-  architecture section above) -- not attempted, and ET's flow doesn't
-  obviously need a race the way Mosh's does, since ET's own bootstrap
-  already rides the same trusted SSH connection with no separate UDP
-  round trip to wait on.
 - `ETBootstrap`+`ETTransport`'s interaction with `HostKeyStore`/Face ID/
   background execution -- entirely unexamined, unlike Mosh's dedicated
   investigation of each.
@@ -1629,6 +1669,9 @@ been done or attempted**, matching this section's scope throughout. Before
   matching the real client's own default) hasn't been tuned or tested
   against a slow/high-latency link, the same open item Mosh's constants
   carry.
+- The mutual-exclusivity toggle and a live Eternal Terminal session
+  through the app's actual UI (not just `ETTransport` standalone) haven't
+  been tap-tested -- see "UI integration" above for why.
 
 ## TestFlight release notes
 

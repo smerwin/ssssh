@@ -137,12 +137,15 @@ final class ETTransport: @unchecked Sendable {
         }
     }
 
-    /// Sends a PTY resize as a `TerminalInfo` packet.
-    func resize(id terminalId: String, cols: Int32, rows: Int32, widthPixels: Int32 = 0, heightPixels: Int32 = 0) {
+    /// Sends a PTY resize as a `TerminalInfo` packet. `id` is left empty,
+    /// matching the real client -- confirmed by reading
+    /// `PseudoTerminalConsole::getTerminalInfo` (`src/terminal/PseudoTerminalConsole.hpp`)
+    /// directly: it never calls `TerminalInfo::set_id` at all, only
+    /// row/column/width/height from `ioctl(TIOCGWINSZ)`.
+    func resize(cols: Int32, rows: Int32, widthPixels: Int32 = 0, heightPixels: Int32 = 0) {
         queue.async { [weak self] in
             guard let self else { return }
             var info = ETTerminalInfo()
-            info.id = terminalId
             info.row = rows
             info.column = cols
             info.width = widthPixels

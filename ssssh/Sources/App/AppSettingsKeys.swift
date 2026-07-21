@@ -9,6 +9,7 @@ enum AppSettingsKeys {
     static let autoReconnect = "autoReconnect"
     static let verboseConnecting = "verboseConnecting"
     static let autoUpgradeToMosh = "autoUpgradeToMosh"
+    static let autoUpgradeToET = "autoUpgradeToET"
 }
 
 extension UserDefaults {
@@ -37,5 +38,17 @@ extension UserDefaults {
     /// opt-in rather than on by default.
     var autoUpgradeToMoshEnabled: Bool {
         bool(forKey: AppSettingsKeys.autoUpgradeToMosh)
+    }
+
+    /// Same "opt-in, off by default" reasoning as `autoUpgradeToMoshEnabled`
+    /// -- bootstraps `etterminal` over SSH and races a real Eternal
+    /// Terminal TCP session against the plain SSH PTY (see
+    /// `SSHConnection.attemptETUpgrade`). Mutually exclusive with Mosh in
+    /// `SettingsView` (checking one unchecks the other) -- `SSHConnection`
+    /// itself only ever reads this alongside `autoUpgradeToMoshEnabled` to
+    /// pick at most one upgrade path per connection, never both, so this
+    /// accessor doesn't need to re-enforce that exclusivity itself.
+    var autoUpgradeToETEnabled: Bool {
+        bool(forKey: AppSettingsKeys.autoUpgradeToET)
     }
 }

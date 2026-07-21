@@ -27,6 +27,13 @@ private final class SSHNetworkState: @unchecked Sendable {
     /// working UDP path and closed `client` -- from that point on, `send`/
     /// `resize` route here instead of to `writer`.
     var moshTransport: MoshTransport?
+    /// Non-nil once `runSession`'s `attemptETUpgrade` has confirmed a
+    /// working Eternal Terminal TCP session and closed `client` -- from
+    /// that point on, `send`/`resize` route here instead of to `writer`.
+    /// Mutually exclusive with `moshTransport` in practice (`SettingsView`
+    /// only ever allows one upgrade path on at a time), but nothing here
+    /// enforces that itself -- see `runSession`'s `upgradeMode` selection.
+    var etTransport: ETTransport?
 }
 
 /// Ensures a `CheckedContinuation` is resumed exactly once even though it
@@ -50,20 +57,22 @@ private final class SingleResume: @unchecked Sendable {
     }
 }
 
-/// Tells the Mosh-vs-plain-SSH handoff race apart from a genuine failure.
-/// Both a speculative PTY channel and a Mosh bootstrap+confirm attempt are
-/// opened concurrently on the same `client` (see `runSession`'s doc comment
-/// on the race) -- if Mosh wins, it closes `client` to free up the port,
-/// which also forces the still-open speculative PTY channel to fail. That
-/// failure is expected, not a real drop, so it must not trigger
+/// Tells the upgrade-vs-plain-SSH handoff race apart from a genuine
+/// failure. Both a speculative PTY channel and an upgrade attempt (Mosh's
+/// bootstrap+confirm, or Eternal Terminal's bootstrap+connect -- see
+/// `runSession`'s `upgradeMode`, only one is ever attempted per connection)
+/// are opened concurrently on the same `client` (see `runSession`'s doc
+/// comment on the race) -- if the upgrade wins, it closes `client` to free
+/// up the port, which also forces the still-open speculative PTY channel to
+/// fail. That failure is expected, not a real drop, so it must not trigger
 /// `finishCleanly`/`finishWithDrop`. Set synchronously, as the last thing
 /// before that `client.close()` call, so there's no window where the
 /// resulting channel failure could be observed before this flag is true --
-/// a plain `var` can't safely cross into the `Task { ... }` `attemptMoshUpgrade`
-/// runs in, hence the `@unchecked Sendable` wrapper (only ever written once,
-/// from that single task, and read afterward).
+/// a plain `var` can't safely cross into the `Task { ... }` `attemptMoshUpgrade`/
+/// `attemptETUpgrade` run in, hence the `@unchecked Sendable` wrapper (only
+/// ever written once, from that single task, and read afterward).
 private final class HandoffOutcome: @unchecked Sendable {
-    var moshWon = false
+    var upgradeWon = false
 }
 
 /// Carries a real read error on the speculative PTY channel's reader task
@@ -155,6 +164,17 @@ final class SSHConnection: Identifiable, Hashable, @unchecked Sendable {
         network.moshTransport != nil
     }
 
+    /// Whether this connection's live data path is currently Eternal
+    /// Terminal rather than the SSH channel -- true once `attemptETUpgrade`
+    /// has confirmed the session and committed. Unlike `isUsingMosh`, no
+    /// terminal-layer behavior currently keys off this: Eternal Terminal is
+    /// a byte-for-byte passthrough with no client-side prediction concept
+    /// (see CLAUDE.md's "Why native scrolling and tmux -CC work" note), so
+    /// there's nothing analogous to gate.
+    var isUsingET: Bool {
+        network.etTransport != nil
+    }
+
     /// Set once by `TerminalViewStore`'s persistent controller for this
     /// connection and left wired for as long as the session is open, so
     /// output arriving while no `TerminalSessionView` is on screen is still
@@ -219,6 +239,19 @@ final class SSHConnection: Identifiable, Hashable, @unchecked Sendable {
     /// wait before falling back. Still a guess, not tuned against a real
     /// high-latency link -- see CLAUDE.md's Mosh section, "Still open".
     nonisolated private static let moshConfirmationTimeout: TimeInterval = 2
+
+    /// How long `attemptETUpgrade` waits for `ETTransport.onEstablished`
+    /// before giving up on Eternal Terminal for this connection attempt.
+    /// Longer than `moshConfirmationTimeout` on purpose: confirming Mosh is
+    /// a single UDP round trip, but confirming Eternal Terminal needs a
+    /// full TCP handshake plus two further round trips
+    /// (`ConnectRequest`/`ConnectResponse`, then `InitialPayload`/
+    /// `InitialResponse` -- see `ETTransport`) before `onEstablished` ever
+    /// fires, so the same 2s budget would false-negative more often on
+    /// exactly the same link. Still an untuned guess, same caveat as
+    /// `moshConfirmationTimeout` -- see CLAUDE.md's Eternal Terminal
+    /// section, "Still open".
+    nonisolated private static let etConfirmationTimeout: TimeInterval = 4
 
     /// PTY size requested on connect, before the terminal view reports its
     /// own real size via `resize(cols:rows:)`. Also `lastKnownSize`'s
@@ -372,33 +405,49 @@ final class SSHConnection: Identifiable, Hashable, @unchecked Sendable {
             }
 
             // `.connected` deliberately isn't published yet -- whichever of
-            // Mosh or plain SSH ends up live publishes it once it's actually
-            // about to produce output, not before (see below).
+            // the upgrade path or plain SSH ends up live publishes it once
+            // it's actually about to produce output, not before (see below).
             //
-            // Mosh-vs-SSH handoff race: `attemptMoshUpgrade` (an SSH round
-            // trip to bootstrap mosh-server, then a UDP round trip to
-            // confirm it) used to run to completion *before* a PTY was even
-            // requested, so a host where it eventually failed or fell back
-            // still paid for that whole sequence serially first. A PTY
-            // channel now opens on `client` at the same time as the Mosh
-            // attempt runs -- but that alone isn't a real race unless SSH is
-            // actually *allowed* to go first when it's ready first: an
-            // earlier version of this still unconditionally waited for
-            // Mosh's decision before ever showing SSH's already-ready
-            // output, so a host where Mosh eventually failed still made
-            // every connection pay for the full attempt (up to
-            // `moshConfirmationTimeout`) even though plain SSH was ready
+            // Upgrade-vs-SSH handoff race: `attemptMoshUpgrade`/
+            // `attemptETUpgrade` (each an SSH round trip to bootstrap,
+            // then a further round trip to confirm) used to run to
+            // completion *before* a PTY was even requested, so a host where
+            // it eventually failed or fell back still paid for that whole
+            // sequence serially first. A PTY channel now opens on `client`
+            // at the same time as the upgrade attempt runs -- but that
+            // alone isn't a real race unless SSH is actually *allowed* to
+            // go first when it's ready first: an earlier version of this
+            // still unconditionally waited for the upgrade's decision
+            // before ever showing SSH's already-ready output, so a host
+            // where it eventually failed still made every connection pay
+            // for the full attempt (up to `moshConfirmationTimeout`/
+            // `etConfirmationTimeout`) even though plain SSH was ready
             // almost immediately. Now it's a genuine race by arrival time,
             // implemented below: whichever of "SSH's first real byte of
-            // output" or "Mosh's decision" happens first is what's reacted
-            // to first. If SSH wins, it goes live immediately; if Mosh then
-            // confirms shortly after, the session upgrades to Mosh
+            // output" or "the upgrade's decision" happens first is what's
+            // reacted to first. If SSH wins, it goes live immediately; if
+            // the upgrade then confirms shortly after, the session upgrades
             // mid-stream instead of never having had the chance to.
-            let moshUpgradeEnabled = UserDefaults.standard.autoUpgradeToMoshEnabled
+            //
+            // At most one upgrade is ever attempted per connection --
+            // `SettingsView` keeps the two toggles mutually exclusive (
+            // checking one unchecks the other), so `upgradeMode` picks
+            // whichever is on, or `nil` if neither is.
+            enum UpgradeMode { case mosh, et }
+            let upgradeMode: UpgradeMode? =
+                if UserDefaults.standard.autoUpgradeToMoshEnabled { .mosh }
+                else if UserDefaults.standard.autoUpgradeToETEnabled { .et }
+                else { nil }
             let handoff = HandoffOutcome()
-            let moshTask = Task<Void, Never> {
-                guard moshUpgradeEnabled else { return }
-                _ = await self.attemptMoshUpgrade(client: client, handoff: handoff, host: host, network: network)
+            let upgradeTask = Task<Void, Never> {
+                switch upgradeMode {
+                case .mosh:
+                    _ = await self.attemptMoshUpgrade(client: client, handoff: handoff, host: host, network: network)
+                case .et:
+                    _ = await self.attemptETUpgrade(client: client, handoff: handoff, host: host, network: network)
+                case nil:
+                    break
+                }
             }
 
             let ptyRequest = SSHChannelRequestEvent.PseudoTerminalRequest(
@@ -410,9 +459,12 @@ final class SSHConnection: Identifiable, Hashable, @unchecked Sendable {
                 terminalPixelHeight: 0,
                 terminalModes: SSHTerminalModes([:])
             )
-            if moshUpgradeEnabled {
+            switch upgradeMode {
+            case .mosh:
                 await emitDiagnostic("debug1: Requesting pty (xterm-256color, \(Self.defaultTerminalSize.cols)x\(Self.defaultTerminalSize.rows)) alongside the Mosh attempt.")
-            } else {
+            case .et:
+                await emitDiagnostic("debug1: Requesting pty (xterm-256color, \(Self.defaultTerminalSize.cols)x\(Self.defaultTerminalSize.rows)) alongside the Eternal Terminal attempt.")
+            case nil:
                 await emitDiagnostic("debug1: Requesting pty (xterm-256color, \(Self.defaultTerminalSize.cols)x\(Self.defaultTerminalSize.rows)).")
             }
 
@@ -442,12 +494,12 @@ final class SSHConnection: Identifiable, Hashable, @unchecked Sendable {
                     }
 
                     // Merges "the next byte of real SSH output arrived" and
-                    // "Mosh's bootstrap+confirm attempt has decided" into a
-                    // single ordered stream of events, so whichever
-                    // genuinely happens first is what the loop below reacts
-                    // to first -- a true race by arrival time, not "always
-                    // wait for Mosh, then check what it decided."
-                    enum RaceEvent { case chunk([UInt8]), moshDecision(Bool) }
+                    // "the upgrade attempt has decided" into a single
+                    // ordered stream of events, so whichever genuinely
+                    // happens first is what the loop below reacts to first
+                    // -- a true race by arrival time, not "always wait for
+                    // the upgrade, then check what it decided."
+                    enum RaceEvent { case chunk([UInt8]), upgradeDecision(Bool) }
                     let (events, eventsContinuation) = AsyncStream<RaceEvent>.makeStream()
                     let chunkForwarder = Task {
                         for await chunk in stream {
@@ -455,9 +507,9 @@ final class SSHConnection: Identifiable, Hashable, @unchecked Sendable {
                         }
                         eventsContinuation.finish()
                     }
-                    let moshForwarder = Task {
-                        await moshTask.value
-                        eventsContinuation.yield(.moshDecision(handoff.moshWon))
+                    let upgradeForwarder = Task {
+                        await upgradeTask.value
+                        eventsContinuation.yield(.upgradeDecision(handoff.upgradeWon))
                     }
 
                     var hasCommittedToSSH = false
@@ -473,37 +525,38 @@ final class SSHConnection: Identifiable, Hashable, @unchecked Sendable {
 
                     for await event in events {
                         switch event {
-                        case .moshDecision(let won):
+                        case .upgradeDecision(let won):
                             guard won else {
-                                // Mosh lost. If SSH's own output hadn't
-                                // arrived yet, it's free to become the live
-                                // path right now instead of waiting any
-                                // further for a Mosh attempt that's already
-                                // over.
+                                // The upgrade lost (or none was attempted).
+                                // If SSH's own output hadn't arrived yet,
+                                // it's free to become the live path right
+                                // now instead of waiting any further for an
+                                // attempt that's already over.
                                 await commitToSSH()
                                 continue
                             }
-                            // Mosh won -- possibly *after* SSH had already
-                            // become the live, interactive path. That's what
-                            // makes this a real race: SSH was free to go the
-                            // instant it was ready, without waiting to see
-                            // whether Mosh would eventually beat it. If SSH
-                            // had already committed, say so -- same
-                            // reasoning as the reconnect banner above: a
-                            // brand new shell appearing with no explanation
-                            // would look like a hang or a bug, not an
-                            // upgrade.
+                            // The upgrade won -- possibly *after* SSH had
+                            // already become the live, interactive path.
+                            // That's what makes this a real race: SSH was
+                            // free to go the instant it was ready, without
+                            // waiting to see whether the upgrade would
+                            // eventually beat it. If SSH had already
+                            // committed, say so -- same reasoning as the
+                            // reconnect banner above: a brand new shell
+                            // appearing with no explanation would look like
+                            // a hang or a bug, not an upgrade.
                             if hasCommittedToSSH {
+                                let name = upgradeMode == .et ? "Eternal Terminal" : "Mosh"
                                 await MainActor.run {
-                                    self.onOutput?(Array("\r\n[ssssh] Mosh is now available -- upgrading this session…\r\n".utf8))
+                                    self.onOutput?(Array("\r\n[ssssh] \(name) is now available -- upgrading this session…\r\n".utf8))
                                 }
                             }
-                            // Mosh's own `attemptMoshUpgrade` already wired
-                            // its transport and closed `client` -- that's
-                            // what ends `readerTask`'s loop; whatever it saw
-                            // there is an expected side effect of that
-                            // close, not a real failure, so it's discarded
-                            // rather than inspected.
+                            // The upgrade's own attempt function already
+                            // wired its transport and closed `client` --
+                            // that's what ends `readerTask`'s loop; whatever
+                            // it saw there is an expected side effect of
+                            // that close, not a real failure, so it's
+                            // discarded rather than inspected.
                             chunkForwarder.cancel()
                             _ = await readerTask.value
                             return
@@ -513,13 +566,13 @@ final class SSHConnection: Identifiable, Hashable, @unchecked Sendable {
                         }
                     }
 
-                    _ = await moshForwarder.value
+                    _ = await upgradeForwarder.value
                     _ = await readerTask.value
                     if let error = readerFailure.error {
                         throw error
                     }
                 }
-                if !handoff.moshWon {
+                if !handoff.upgradeWon {
                     await finishCleanly(network: network)
                 }
             } catch let error as NIO.ChannelError where error == .alreadyClosed {
@@ -530,14 +583,15 @@ final class SSHConnection: Identifiable, Hashable, @unchecked Sendable {
                 // PTY session completed successfully and only the trailing
                 // close-after-close raised this. Same as the clean-exit
                 // case above: no auto-reconnect. Also reached, harmlessly,
-                // when Mosh won this connection's handoff race and closed
-                // `client` out from under this still-open speculative
-                // channel -- `handoff.moshWon` tells the two apart.
-                if !handoff.moshWon {
+                // when an upgrade won this connection's handoff race and
+                // closed `client` out from under this still-open
+                // speculative channel -- `handoff.upgradeWon` tells the two
+                // apart.
+                if !handoff.upgradeWon {
                     await finishCleanly(network: network)
                 }
             } catch {
-                if !handoff.moshWon {
+                if !handoff.upgradeWon {
                     let message = Self.describe(error)
                     await emitDiagnostic("debug1: \(message)")
                     await finishWithDrop(.failed(message), network: network)
@@ -558,6 +612,8 @@ final class SSHConnection: Identifiable, Hashable, @unchecked Sendable {
         network.writer = nil
         network.moshTransport?.stop()
         network.moshTransport = nil
+        network.etTransport?.stop()
+        network.etTransport = nil
     }
 
     // For a clean, expected end: the remote shell exited on its own
@@ -665,7 +721,7 @@ final class SSHConnection: Identifiable, Hashable, @unchecked Sendable {
         }
 
         // The user may have called `disconnect()` while the bootstrap/UDP-
-        // confirm above was still in flight. `moshTask` (this function's
+        // confirm above was still in flight. `upgradeTask` (this function's
         // caller) is a plain, unstructured `Task { }`, not a structured
         // child of `connectTask` -- cancelling `connectTask` in
         // `disconnect()` does not cancel this one, and nothing here checked
@@ -705,7 +761,7 @@ final class SSHConnection: Identifiable, Hashable, @unchecked Sendable {
         // this were set by the caller after awaiting this function's
         // return value instead, there'd be a real window where that
         // failure could be observed with the flag still `false`.
-        handoff.moshWon = true
+        handoff.upgradeWon = true
 
         network.moshTransport = transport
         network.client = nil
@@ -713,8 +769,105 @@ final class SSHConnection: Identifiable, Hashable, @unchecked Sendable {
         return true
     }
 
+    // Bootstraps `etterminal` over `client` (`ETBootstrap.detect`), opens
+    // an `ETTransport` to `etserver`, and waits up to `etConfirmationTimeout`
+    // for `onEstablished` -- which only fires once the full
+    // `ConnectRequest`/`ConnectResponse` and `InitialPayload`/
+    // `InitialResponse` handshake has succeeded (see `ETTransport`), not
+    // just a bare TCP connect. Runs concurrently with a speculative PTY
+    // channel opened on the same `client`, same handoff race as
+    // `attemptMoshUpgrade` -- see `runSession`'s doc comment.
+    // Returns `true` once the switch has happened -- `client` has been
+    // closed and `network.etTransport` is now the live data path, so the
+    // caller must skip opening a PTY over SSH. Returns `false` for every
+    // other outcome (Eternal Terminal unavailable, bootstrap failed,
+    // handshake didn't complete in time), in which case `client` is still
+    // open and untouched for the caller to proceed with the normal SSH
+    // PTY path.
+    nonisolated private func attemptETUpgrade(
+        client: Citadel.SSHClient,
+        handoff: HandoffOutcome,
+        host: SSHHost,
+        network: SSHNetworkState
+    ) async -> Bool {
+        let bootstrap: ETBootstrap.Result
+        do {
+            bootstrap = try await ETBootstrap.detect(host: host.hostname, client: client)
+        } catch {
+            await emitDiagnostic("debug1: Eternal Terminal not available (\(error.localizedDescription)).")
+            return false
+        }
+        await emitDiagnostic("debug1: etserver available; attempting Eternal Terminal upgrade.")
+
+        let transport = ETTransport(
+            host: host.hostname,
+            port: ETBootstrap.defaultPort,
+            id: bootstrap.id,
+            passkeyBytes: Array(bootstrap.passkey.utf8)
+        )
+
+        let established = await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
+            let resumer = SingleResume(continuation)
+            transport.onEstablished = { resumer.resume(true) }
+            transport.onError = { error in
+                Task { await self.emitDiagnostic("debug1: Eternal Terminal error (\(error.localizedDescription)) before upgrade completed.") }
+                resumer.resume(false)
+            }
+            transport.start()
+            DispatchQueue.global().asyncAfter(deadline: .now() + Self.etConfirmationTimeout) {
+                resumer.resume(false)
+            }
+        }
+
+        guard established else {
+            await emitDiagnostic("debug1: Eternal Terminal did not confirm within \(Int(Self.etConfirmationTimeout))s; continuing over SSH.")
+            transport.stop()
+            return false
+        }
+
+        // Same reasoning as `attemptMoshUpgrade`'s identical guard: `upgradeTask`
+        // is an unstructured `Task { }`, so a `disconnect()` racing this
+        // bootstrap/handshake wouldn't otherwise be noticed before
+        // committing below.
+        let disconnectedMeanwhile = await MainActor.run { self.userInitiatedClose }
+        guard !disconnectedMeanwhile else {
+            transport.stop()
+            return false
+        }
+
+        await emitDiagnostic("debug1: Eternal Terminal session confirmed; closing SSH connection and switching this session to Eternal Terminal.")
+        await MainActor.run { self.state = .connected }
+
+        transport.onOutput = { [weak self] bytes in
+            guard let self else { return }
+            Task { await MainActor.run { self.onOutput?(bytes) } }
+        }
+        transport.onError = { [weak self] error in
+            guard let self else { return }
+            Task {
+                let message = Self.describe(error)
+                await self.emitDiagnostic("debug1: Eternal Terminal session error: \(message).")
+                await self.finishWithDrop(.failed(message), network: network)
+            }
+        }
+
+        // Same ordering reasoning as `attemptMoshUpgrade`'s identical
+        // comment: set before `client.close()`, not after this function
+        // returns.
+        handoff.upgradeWon = true
+
+        network.etTransport = transport
+        network.client = nil
+        try? await client.close()
+        return true
+    }
+
     func send(_ bytes: [UInt8]) {
         if let transport = network.moshTransport {
+            transport.send(bytes)
+            return
+        }
+        if let transport = network.etTransport {
             transport.send(bytes)
             return
         }
@@ -733,6 +886,10 @@ final class SSHConnection: Identifiable, Hashable, @unchecked Sendable {
         guard cols > 0, rows > 0 else { return }
         if let transport = network.moshTransport {
             transport.resize(cols: cols, rows: rows)
+            return
+        }
+        if let transport = network.etTransport {
+            transport.resize(cols: Int32(cols), rows: Int32(rows))
             return
         }
         guard let writer = network.writer else { return }
@@ -759,12 +916,15 @@ final class SSHConnection: Identifiable, Hashable, @unchecked Sendable {
         connectTask?.cancel()
         connectTask = nil
         let client = network.client
-        let transport = network.moshTransport
+        let moshTransport = network.moshTransport
+        let etTransport = network.etTransport
         network.client = nil
         network.writer = nil
         network.moshTransport = nil
+        network.etTransport = nil
         state = .disconnected
-        transport?.stop()
+        moshTransport?.stop()
+        etTransport?.stop()
         Task { try? await client?.close() }
     }
 
