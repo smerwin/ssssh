@@ -1795,12 +1795,46 @@ and a new small `sendFramed(_:)` helper used by all four send call
 sites) and guarding the completion handler with
 `registeredConnection === self.connection` before doing anything else --
 a completion whose connection has already been superseded is dropped
-outright rather than processed. Verified with the existing
-`ETTransportTests`/full suite (163 tests) and a clean `xcodebuild` build;
-**not** re-verified against a real backgrounded app hitting a live
-`etserver` (that needs a physical device/TestFlight build, not available
-in this environment) -- if you pick this up next, that's the way to
-confirm the fix rather than just trusting the reasoning above.
+outright rather than processed.
+
+**This first pass was incomplete** -- it missed the third async completion
+path with the identical shape: `armConnection`'s `stateUpdateHandler`.
+That closure relied only on `connection.stateUpdateHandler = nil` being
+set (by `handleConnectionFailure`/`handleConnectResponse`'s rejection
+branch) before `cancel()`, on the assumption that nil-ing the property
+stops the old connection from calling back. It doesn't: if Network.framework
+had *already dispatched* a `.ready`/`.failed` event onto `queue` before the
+nil-ing ran, that already-enqueued closure still fires -- capturing the
+stale `isReconnect` value from when it was armed, and calling
+`handleConnectionReady`/`handleConnectionFailure` against whatever
+`self.connection`/`self.writer` happen to be *now* (the real, current
+reconnect's state), not the connection it was actually reporting about.
+Reported directly, again after backgrounding: `Eternal Terminal session
+error: ... ETBackedWriter.RecoverError error 2` (`.stillConnected`,
+Swift's positional NSError code for the third `RecoverError` case) --
+thrown from `handleSequenceHeader`'s `writer.recover(...)`, which requires
+`writer.connected == false`. The only way to reach that call with
+`writer.connected` still `true` is for a *second*, overlapping
+reconnect handshake to have already run `handleCatchupBuffer`'s
+`writer.revive(connected: true)` while another one-shot exchange was still
+in flight -- exactly what a stale `.ready` callback re-triggering
+`handleConnectionReady` (resending a `ConnectRequest`, re-arming a second
+`receiveLoop`) on the current connection out of turn would produce. Fixed
+the same way as the receive/send race: `armConnection` now captures
+`registeredConnection` at registration time and guards the queued handler
+body with the same identity check before touching `state` at all.
+
+Verified with the existing `ETTransportTests`/full suite (163 tests) and a
+clean `xcodebuild` build; **not** re-verified against a real backgrounded
+app hitting a live `etserver` (needs a physical device/TestFlight build,
+not available in this environment) -- if you pick this up next and see
+*any* further "stale completion" symptom after backgrounding (a decrypt
+failure, a rejected/confused reconnect, a protocol-state error that
+implies two handshakes overlapped), check whether it's yet another async
+completion path missing this same identity guard before assuming it's a
+new, unrelated bug -- `NWConnection` has more than these three completion
+shapes (`receive`, `send`'s `.contentProcessed`, `stateUpdateHandler`) if
+a future change adds one.
 
 ### Still open
 
