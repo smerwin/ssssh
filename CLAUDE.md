@@ -948,14 +948,31 @@ verified here the same way CLAUDE.md's SSH section recommends for
 Process/NSTask: a standalone macOS SwiftPM executable importing the same
 Mosh sources and Citadel, not an iOS Simulator XCTest.
 
-## Eternal Terminal support (not started -- investigation notes)
+## Eternal Terminal support (wire protocol complete and live-verified; wired into SSHConnection, not yet tap-tested through the app's UI)
 
-Nobody has written any code for this yet. This is a scoping writeup from
-source research, kept here so a future session doesn't have to re-derive
-it -- treat it as a starting point, not a finished design. Every claim
+This started as a scoping writeup from source research. The wire protocol
+it scoped is now fully implemented in `ssssh/Sources/EternalTerminal/`
+(`ETBootstrap`, `ETCrypto`, `ETPacket`, `ETMessages`, `ETBackedIO`,
+`ETTransport`) and verified end-to-end against a real, unmodified
+`etserver` -- see each subsection's "What's implemented" note for what
+exists and how it was verified. `ETTransport` is also now wired into
+`SSHConnection`'s live connect flow behind a Settings toggle, mutually
+exclusive with the existing Mosh toggle -- see "UI integration" and
+"Still open" near the end of this section for exactly what that covers
+and, importantly, what about it still hasn't been verified by actually
+tapping through the app (only by code review and the standalone
+`ETTransport` verification above). Every claim
 below is cited against `MisterTea/EternalTerminal`'s actual source (its
 `src/` and `proto/` directories), the same way the Mosh section above is
-grounded in `mobile-shell/mosh`'s source rather than general knowledge.
+grounded in `mobile-shell/mosh`'s source rather than general knowledge --
+several claims in this section were corrected mid-implementation by that
+same discipline (an id-mangling character count, MAC prepended vs.
+appended, an 8-byte vs. 4-byte length prefix used for two genuinely
+different purposes, the real `TerminalPacketType` count, and
+`TerminalUserInfo`/`TermInit` not actually being part of the client-visible
+protocol at all) -- each correction is left in place inline rather than
+silently fixed, since the corrections themselves are the more durable
+lesson for whoever touches this code next.
 
 **Bottom line**: ET's wire protocol is *architecturally simpler* to
 reimplement than Mosh's -- a reliable-byte-stream resume over TCP, not a
@@ -968,6 +985,82 @@ support in this app will only ever work against hosts that already have
 "Server-side prerequisites" below for why, and why the alternative
 (ssssh installing and launching a persistent daemon on someone else's
 host) was rejected rather than pursued.
+
+### What's implemented
+
+`ETBootstrap.detect(host:port:client:)` implements the full client-side
+bootstrap handshake described in "Bootstrap flow" below: `ping(host:port:)`
+does the bare TCP connect-then-close check via `NWConnection` (mirroring
+`et`'s own `ping()` exactly, including running *before* SSH is touched at
+all), then it generates a 16-char id / 32-char passkey with the same
+`'X','X','X'`-prefix mangling `SetupSsh` does, runs `echo
+'<id>/<passkey>_<clientTerm>' | etterminal --verbose=0` over the given
+already-authenticated `Citadel.SSHClient`, and parses the `IDPASSKEY:`
+reply with the same **fixed-width substring** approach the real client
+uses (`16 + 1 + 32` characters right after the marker, split on `/`) rather
+than scanning for a delimiter-terminated line -- see the doc comment on
+`ETBootstrap` for the correction this was grounded against (an earlier pass
+through this file had summarized both the mangling and the parsing
+imprecisely; reading `SshSetupHandler.cpp`'s `SetupSsh` and
+`TerminalMain.cpp` directly caught it before it became a real bug).
+
+This only gets as far as detection/registration -- it does not open the
+ET-protocol TCP connection, implement its XSalsa20-Poly1305 framing, or
+hand the terminal's data path over to it. That's the "Recommended scope
+for a first pass" below, deliberately not attempted yet.
+
+**Verified end-to-end against a real `etserver`, not just unit-tested
+against synthetic strings.** Alpine (this repo's usual throwaway SSH
+container base -- see "Manual verification against a real SSH server"
+below) has no `eternalterminal` package in its repos; `debian:bookworm-slim`
+does, via the project's own documented apt repo:
+
+```
+mkdir -m 0755 -p /etc/apt/keyrings
+echo "deb [signed-by=/etc/apt/keyrings/et.gpg] https://mistertea.github.io/debian-et/debian-source/ bookworm main" \
+  > /etc/apt/sources.list.d/et.list
+curl -sSL https://github.com/MisterTea/debian-et/raw/master/et.gpg -o /etc/apt/keyrings/et.gpg
+apt-get update && apt-get install -y et
+```
+
+(Only `bookworm` and `trixie` are published under that repo's `dists/` --
+`jammy`/`focal`/`noble`/`bullseye` all 404, so an Ubuntu-based container
+won't work here without building from source.) With `et` 7.0.0 installed,
+`etserver --daemon --pidfile=/var/run/etserver.pid` started successfully
+and bound port 2022, and a manual `ssh ... "echo '...' | etterminal
+--verbose=0"` round trip surfaced a genuine finding beyond what reading the
+source alone caught: **the first manual test, sending only `<id>/<passkey>`
+with no `_<clientTerm>` suffix, made `etterminal` abort with `STFATAL
+"Invalid number of tokens: 1"`** (`TerminalMain.cpp` splits stdin on `_`
+and requires exactly 2 tokens) -- confirming the `_<clientTerm>` suffix
+isn't optional cosmetic detail, `etterminal` hard-crashes without it. Once
+sent correctly, the real reply
+(`IDPASSKEY:rHQ8Y9jVVf95KHHg/HYsIIjMJ9NMVxO0ec0wNzCcLc0qOEp0v`) confirmed
+three things at once: the 49-character fixed-width assumption is exactly
+right against the real binary (`len(id)==16`, `len(passkey)==32`,
+confirmed by direct measurement, not eyeballing); the server actually does
+regenerate the whole id/passkey pair when it sees the client's `XXX`-prefixed
+proposal (`TerminalMain.cpp`'s `idpasskey.substr(0, 3) == "XXX"` branch),
+i.e. `ETBootstrap.Result` reporting back whatever the parsed reply contains
+-- never assuming it matches what was sent -- is the only correct approach,
+not a defensive-but-unnecessary extra step; and a real `etterminal` prints
+warning noise before its `IDPASSKEY:` line the same way `mosh-server` does
+(here, a `setlocale` warning), which is exactly the "tolerates surrounding
+banner text" case `ETBootstrapTests` already covers.
+
+The full path was then re-verified through `ETBootstrap.detect` itself
+(not just the parser), the same way the Mosh section's "Verifying against a
+real mosh-server" describes: a standalone macOS SwiftPM executable
+depending directly on Citadel 0.12.1 (this repo's actual pinned version,
+per `Package.resolved`), with `ETBootstrap.swift` copied in as a source
+file, connecting over real SSH (`Citadel.SSHClient.connect(host:port:
+authenticationMethod:hostKeyValidator:reconnect:)`,
+`.passwordBased(username:password:)`, `.acceptAnything()` for the
+throwaway container's host key) and calling `ETBootstrap.detect(host:
+"127.0.0.1", port: 2022, client:)` directly. It returned a genuine,
+freshly server-generated id/passkey pair end-to-end, confirming `ping`,
+the SSH-run bootstrap command, and the parser all compose correctly against
+live infrastructure, not just against each other in isolation.
 
 ### Bootstrap flow -- and why it's fundamentally different from Mosh's
 
@@ -984,11 +1077,25 @@ of entropy) and runs, over the existing trusted SSH connection:
 echo '<id>/<passkey>_<clientTerm>' | etterminal --verbose=<v> [--serverfifo=...]
 ```
 
-`etterminal`'s stdout is scanned for a line containing `IDPASSKEY:`; the
-`id/passkey` substring after it is parsed out (a newer server can
-override the client-proposed id/passkey with its own -- the client
-deliberately mangles its own proposed id's first two characters to signal
-"I'm willing to accept a server-generated one instead").
+**Correction to this paragraph, confirmed by reading the actual source
+(`SshSetupHandler.cpp`'s `SetupSsh`) rather than relying on the summary
+originally written here**: the client does not scan for *a line*
+containing `IDPASSKEY:` -- it does `sshBuffer.find("IDPASSKEY:")` over the
+whole buffer, then takes a **fixed-width substring**: exactly `16 + 1 +
+32` (49) characters starting right after that 10-character marker, split
+on `/`. This assumes the server's returned id is also exactly 16
+characters (it doesn't re-measure), so a Swift port must mirror the fixed
+width, not search for a delimiter-terminated line. And the "mangling" is
+not a two-character signal-encoding scheme -- it's simpler and dumber
+than that: `SetupSsh` unconditionally overwrites the **first three**
+characters of its freshly-generated 16-char id with the literal characters
+`'X'`, `'X'`, `'X'` (`id[0] = id[1] = id[2] = 'X'`), with a comment
+calling this "for compatibility with old servers that do not generate
+their own keys" -- not a flag a newer server inspects to decide whether to
+substitute its own id, just a fixed, always-applied prefix. A newer server
+*can* still override the whole id/passkey pair in its `IDPASSKEY:` reply
+regardless of what the client sent; the client only ever reports back
+whatever the parsed reply actually contains.
 
 **The critical difference from Mosh**: `etterminal`, run per-session over
 SSH, is *not* a self-contained server-per-session process the way
@@ -1050,27 +1157,83 @@ way `MoshTransport`'s roaming does for UDP.
 
 ### Wire framing and crypto
 
-Every message on the wire is a **4-byte big-endian length prefix**
-(covering the entire following packet, header included) plus a serialized
-`Packet` (`src/base/Packet.hpp`): `[1 byte: encrypted flag][1 byte:
-packet type][ciphertext-or-plaintext payload]`. The 2-byte flag+type
-prefix is **not** covered by encryption or the MAC -- only `payload` is.
-Payloads are real **protobuf** (proto2, `LITE_RUNTIME`, schemas in
-`proto/ET.proto`/`proto/ETerminal.proto`) -- unlike Mosh, where this
-repo's `MoshProtobuf.swift` deliberately hand-rolled a minimal reader/
-writer because Mosh's three message shapes never needed more than varint
-and length-delimited fields. ET's schemas include at least one `map<string,
-string>` field (`InitialPayload.environmentvariables`) and more message
-variety overall (11 `TerminalPacketType` values vs. Mosh's 3), so a
-from-scratch client here would need to either extend a hand-rolled reader/
-writer to cover map fields, or take a real dependency on SwiftProtobuf --
+**A correction of a correction -- read this before touching wire framing.**
+An earlier pass through this file read `src/base/SocketHandler.hpp`'s
+`readPacket`/`writePacket` and concluded *that* was the length prefix
+governing every message: an **8-byte `int64_t`**, read/written via a raw
+memcpy with **no byte-swap anywhere in that path**, hence little-endian in
+practice -- fixing an original wrong guess of "4-byte big-endian." That fix
+was itself incomplete, caught by reading `src/base/BackedReader.cpp`/
+`BackedWriter.cpp` and `Connection.cpp` directly (the classes that actually
+own and drive the live client/server session, per `Connection.hpp`):
+**`BackedReader`/`BackedWriter` never call `SocketHandler::readPacket`/
+`writePacket` at all.** They implement their *own* inline framing directly
+against the raw `SocketHandler::read`/`write` primitives --
+`BackedWriter::write` does `messageSize = htonl(packet.length());
+string s = string("0000") + packet.serialize(); memcpy(&s[0], &messageSize,
+sizeof(int));`: a **4-byte**, **big-endian** (`htonl`) prefix,
+`sizeof(int)` not `sizeof(int64_t)`. `BackedReader::getPartialMessageLength`
+decodes it symmetrically with `ntohl`. **This 4-byte big-endian framing is
+what governs every ordinary packet** (`TerminalBuffer`, `TerminalInfo`,
+etc.) on the live connection.
+
+The 8-byte int64 mechanism described in the first correction is real, but
+its only actual caller is `Connection::recover`'s one-shot reconnect
+handshake (`writeProto`/`readProto` for exactly one `SequenceHeader` then
+one `CatchupBuffer`, each direction, on a freshly accepted socket, before
+ordinary `Packet` traffic resumes) -- see "Resumption/reconnect protocol"
+below. Two real, different length-prefix mechanisms coexist in this
+codebase for two different purposes; neither correction here was wrong
+about the *bytes it was reading*, only about *which wire path those bytes
+actually governed*. If you're about to trust a framing/format claim in
+this file, prefer finding the exact call site that produces the bytes on
+the wire you actually care about over the first plausible-looking
+read/write helper with a matching-sounding name.
+
+With that corrected: every ordinary packet on the wire is a 4-byte
+big-endian length prefix (covering the entire following packet, header
+included) plus a serialized `Packet` (`src/base/Packet.hpp`): `[1 byte:
+encrypted flag][1 byte: packet type][ciphertext-or-plaintext payload]`.
+The 2-byte flag+type prefix is **not** covered by encryption or the MAC --
+only `payload` is. Payloads are real **protobuf** (proto2, `LITE_RUNTIME`,
+schemas in `proto/ET.proto`/`proto/ETerminal.proto`) -- unlike Mosh, where
+this repo's `MoshProtobuf.swift` deliberately hand-rolled a minimal
+reader/writer because Mosh's three message shapes never needed more than
+varint and length-delimited fields. ET's schemas include at least one
+`map<string, string>` field (`InitialPayload.environmentvariables`) and
+more message variety overall (a second correction: actually **9**
+`TerminalPacketType` values as of the schema fetched directly from
+`proto/ETerminal.proto` during this pass -- `KEEP_ALIVE`, `TERMINAL_BUFFER`,
+`TERMINAL_INFO`, `PORT_FORWARD_DESTINATION_REQUEST`,
+`PORT_FORWARD_DESTINATION_RESPONSE`, `PORT_FORWARD_DATA`,
+`TERMINAL_USER_INFO`, `TERMINAL_INIT`, `JUMPHOST_INIT` -- not the 11
+originally guessed here; note enum values 3 and 4 are simply unused, and
+`PortForwardSourceRequest`/`PortForwardSourceResponse` exist as messages
+with no corresponding `TerminalPacketType` entry of their own) vs. Mosh's
+3, so a from-scratch client here would need to either extend a hand-rolled
+reader/writer to cover map fields, or take a real dependency on SwiftProtobuf --
 worth deciding deliberately rather than defaulting to whichever seems
 easiest at the time.
 
 Encryption is **libsodium's `crypto_secretbox_easy`/`_open_easy`**
 (`src/base/CryptoHandler.cpp`) -- XSalsa20-Poly1305, 32-byte key, 24-byte
-nonce, 16-byte MAC appended to ciphertext. Confirmed specifics that matter
-for a Swift port:
+nonce.
+
+**Correction, from reading libsodium's own
+`crypto_secretbox/crypto_secretbox_easy.c` directly rather than relying on
+the "MAC appended to ciphertext" assumption originally written here**: the
+16-byte MAC is **prepended**, not appended --
+`crypto_secretbox_easy(c, m, mlen, n, k)` calls
+`crypto_secretbox_detached(c + MACBYTES, c, m, mlen, n, k)`, writing
+ciphertext starting at `c + 16` and the MAC at `c + 0`. Wire layout is
+`MAC(16) || ciphertext(mlen)`, and `ET.swift`'s implementation (see
+"What's implemented" above; a Swift port of the crypto layer beyond
+bootstrap hasn't been written yet as of this note, but whoever writes it
+should start from this corrected layout, not the original wrong one) must
+decrypt accordingly: `mac = buffer[0..<16]`, `ciphertext =
+buffer[16...]`.
+
+Confirmed specifics that matter for a Swift port:
 - **The key is the raw ASCII bytes of the 32-character passkey from
   bootstrap, used directly** -- no HKDF/hash step. `crypto_secretbox_KEYBYTES`
   is 32 and the passkey is exactly 32 alphanumeric characters, so the
@@ -1147,6 +1310,49 @@ machinery is a bounded deque of already-encrypted packets plus two
 integer counters -- meaningfully less protocol-state complexity than the
 Mosh work already done here, independent of the deployment-model
 constraint above.
+
+### What's implemented
+
+`ssssh/Sources/EternalTerminal/ETBackedIO.swift`'s `ETBackedWriter`/
+`ETBackedReader` port `BackedWriter`/`BackedReader` from the real source
+above (`src/base/BackedWriter.cpp`/`BackedReader.cpp`), not from this
+section's own prose summary -- reading the actual C++ surfaced behavior
+this summary didn't capture, most importantly that `sequenceNumber` on the
+reader side is credited for an entire replay batch **immediately** when
+`revive()` queues it, not incrementally as each queued packet is later
+drained (`BackedReader::revive`'s `sequenceNumber += newLocalEntries.size()`
+happens once, up front; only genuinely new live-socket reads increment it
+one at a time via `constructPartialMessage`). Also ported faithfully rather
+than "cleaned up": `BackedWriter::write`'s disconnect-buffer-capacity check
+uses the packet's *pre-encryption* length, while the byte count it
+actually accumulates against that cap is *post-encryption* (16 bytes
+larger, from `ETSecretBox`'s MAC) -- a real, minor inconsistency in the
+reference implementation, not a bug worth silently fixing in a port meant
+to interoperate with it.
+
+One deliberate adaptation, not a source-fidelity gap: the real
+`BackedWriter`/`BackedReader` own a raw socket fd and perform blocking
+reads/writes inline. `ETBackedWriter.write` instead returns the framed
+bytes to send (or `.bufferedOnly`/`.skipped`) without touching a socket,
+and `ETBackedReader` consumes already-received `ETPacket`s rather than
+reading them itself -- matching this app's established pattern (see
+`ETBootstrap`/`ETCrypto`/`ETPacket` above) of keeping protocol-state logic
+independently testable without a live `NWConnection`, deferred to the
+transport layer described in "Recommended scope for a first pass" below.
+
+`ETBackedIOTests` mirrors the scenarios in EternalTerminal's own
+`test/unit_tests/BackedIOTest.cpp` (round-trip, in-order recovery, revive
+seeding the replay queue and crediting its sequence number immediately,
+the disconnected-buffer cap with off-by-one tolerance for the MAC-overhead
+quirk above, and the connected 64MB trim-then-`tooFarBehind` behavior) --
+not just invented independently, adapted from the same real test file the
+reference implementation ships. Also covers two guard cases the real
+`recover()` enforces that weren't in that upstream test file specifically:
+refusing to run while still connected, and rejecting a peer claiming to be
+*ahead* of what was actually sent -- modeled as a catchable
+`RecoverError.peerAheadOfSelf` rather than the real client's `STFATAL`
+(process abort), since crashing the whole app is not appropriate behavior
+for a network protocol violation from a peer.
 
 ### Why native scrolling and tmux -CC work -- confirmed as a "dumb pipe"
 
@@ -1228,13 +1434,13 @@ part of an ET integration bolts onto the existing
   tuning was spotted in the reference `TcpSocketHandler` during this
   research pass, but that pass didn't dig deep into keepalive/`TCP_NODELAY`
   specifics -- worth a dedicated check before implementing.
-- **Verification story**: no `Process`/`NSTask` dependency once bootstrap
-  is done (unlike some Mosh-adjacent tooling concerns), so the same
-  "standalone macOS SwiftPM executable" pattern this repo already uses to
-  verify Mosh against a real `mosh-server` (see "Verifying against a real
-  mosh-server" above) applies here too, against a real `etserver` --
-  installed via Docker the same way the Mosh/SSH verification containers
-  are, not yet set up.
+- **Verification story**: resolved for the bootstrap half -- see "What's
+  implemented" above for the Docker/Debian-repo setup and the standalone
+  SwiftPM executable pattern, both now proven out end-to-end. The same
+  container (with `etserver` running as a daemon) should still work for
+  verifying the wire-protocol work once it exists, but that verification
+  itself -- a real TCP session actually exchanging encrypted terminal I/O
+  -- hasn't been attempted, only the bootstrap that precedes it.
 - **Port-forwarding / jumphost / SSH-agent-forwarding** (`-t`, `-r`,
   `--jumphost`, `-f` in the reference client) are out of scope for a first
   pass -- this app has no port-forwarding UI at all today. Flagging only
@@ -1252,11 +1458,220 @@ engine -- just TCP framing, one from-scratch crypto primitive
 (XSalsa20-Poly1305, decided deliberately per "Wire framing and crypto"
 above), a small sequence-numbered resend buffer, and protobuf message
 plumbing (also decided deliberately: hand-rolled-with-map-support vs.
-SwiftProtobuf). A first pass should build detection first --
-`ETBootstrap.detect`, mirroring `MoshBootstrap.detect`'s shape and
-failure-surfacing -- so "this host doesn't have `etserver` running" is a
-clear, expected message rather than a cryptic connection failure, before
-any wire-protocol code is written at all.
+SwiftProtobuf).
+
+**Detection is done** -- `ETBootstrap.detect`, mirroring
+`MoshBootstrap.detect`'s shape and failure-surfacing, exists and is
+verified against a real `etserver`/`etterminal` 7.0.0 (see "What's
+implemented" above), so "this host doesn't have `etserver` running" is
+already a clear, expected error rather than a cryptic connection failure.
+
+**The packet crypto is done too** -- `ssssh/Sources/EternalTerminal/ETCrypto.swift`
+implements XSalsa20-Poly1305 from scratch (`SalsaPermutation`/`Salsa20Core`/
+`HSalsa20Core` mirror libsodium's `crypto_core_salsa20`/`crypto_core_hsalsa20`
+reference C line-for-line; `Poly1305` is a direct 32-bit port of the
+canonical public-domain `poly1305-donna-32.h`; `ETSecretBox` composes them
+into the exact `crypto_secretbox_easy`/`_open_easy` construction; `ETCryptoStream`
+mirrors `CryptoHandler`'s stateful nonce-increment-before-use behavior), and
+is verified in `ETCryptoTests` against a real known-answer vector pulled
+directly from libsodium's own `test/default/secretbox.c`/`secretbox.exp`
+(re-sliced from the old BOXZEROBYTES-prefixed API layout into the `_easy`
+MAC-prepended layout this type actually implements -- see the correction
+in "Wire framing and crypto" above for why that layout matters), not just
+internal round-trip self-consistency. That vector's 131-byte message spans
+more than one 64-byte Salsa20 block, exercising the block-counter
+increment; dedicated tests separately cover the empty-message and
+exact-16-byte-message edge cases in Poly1305's block/no-block-leftover
+logic, tamper rejection (both a flipped ciphertext byte and a flipped MAC
+byte), and `ETCryptoStream`'s writer/reader lockstep plus its rejection of
+a desynced reader. Prototyped and iterated against these vectors in a
+throwaway SwiftPM sandbox before landing in the Xcode project, the same
+fast-iteration approach worth reaching for again for the remaining pieces
+below rather than iterating via full `xcodebuild` runs.
+
+**The packet-envelope framing is done too** --
+`ssssh/Sources/EternalTerminal/ETPacket.swift`'s `ETPacket` mirrors
+`Packet::serialize`/its deserializing constructor (`encrypted(1) ||
+header(1) || payload`), and `ETPacketStreamReader` incrementally
+reassembles packets from a raw byte stream using the **8-byte
+little-endian** length prefix `SocketHandler::readPacket`/`writePacket`
+actually use -- a real, load-bearing correction to this file's original
+"4-byte big-endian" assumption (see "Wire framing and crypto" above);
+getting this wrong would have silently corrupted every message after the
+first. `ETPacketTests` covers round-tripping, reassembly across
+arbitrarily unaligned chunk boundaries (the realistic TCP case, not
+message-aligned reads), multiple packets delivered in one read, the
+zero-length-message no-op case, and rejecting an oversized or negative
+length prefix before waiting for data that would never arrive. This layer
+is deliberately independent of what's inside `payload` -- it doesn't know
+or care that real payloads are protobuf-encoded.
+
+**The protobuf message layer is done too** -- decided
+hand-rolled-with-map-support-deferred, not SwiftProtobuf: reading the
+actual field lists needed for a first-pass terminal session
+(`ConnectRequest`/`ConnectResponse`, `TerminalUserInfo`, `TermInit`,
+`TerminalBuffer`, `TerminalInfo`) showed none of them need
+`map<string, string>` -- the one message that does, `InitialPayload`, is
+only used for jumphost/port-forward setup, already out of this pass's
+scope. `ssssh/Sources/EternalTerminal/ETProtobuf.swift` is a from-scratch
+reader/writer (varint + length-delimited only, same shape as
+`MoshProtobuf` but deliberately not shared code -- see its doc comment
+for why), with `ETMessages.swift` building eight message types --
+`ConnectRequest`/`ConnectResponse`, `TerminalUserInfo`, `TermInit`,
+`TerminalBuffer`, `TerminalInfo`, and `SequenceHeader`/`CatchupBuffer` (the
+two used only by the reconnect handshake, see "Resumption/reconnect
+protocol" below) -- plus `ETPacketHeader`, a single `UInt8` enum unifying
+`EtPacketType`'s 252-254 range and `TerminalPacketType`'s 0-10 range into
+the one namespace `Packet.header` actually occupies on the wire (the two
+proto enums are numbered to never collide, by design, per `EtPacketType`'s
+own "count down from 254 to avoid collisions" source comment).
+
+Verified against **real `protoc --encode`/`--decode` output** (protoc
+35.1, run directly against ET's actual `.proto` files fetched from
+upstream), not just internal round-trip consistency -- e.g.
+`echo 'clientId: "hi" version: 3' | protoc --encode=et.ConnectRequest ET.proto | xxd`
+compared byte-for-byte against this Swift encoder's output.
+`ETMessagesTests` covers all six message types this way, including the one
+tricky case worth calling out: proto2's plain (non-zigzag) `int64`
+encodes a negative value (`TerminalUserInfo.uid = -1` in the test) as the
+full 10-byte sign-extended varint, not a compact zigzag encoding --
+verified against protoc's real output for that exact case, not assumed
+from the spec. Also includes a hardening test mirroring `MoshProtobuf`'s
+own (an oversized length-delimited field must be rejected before
+`Int(length)` ever gets a chance to trap on a value near `UInt64.max`).
+
+**The resend/replay buffer is done too** -- see "What's implemented" under
+"Resumption/reconnect protocol" above for `ETBackedWriter`/`ETBackedReader`
+and the real inconsistencies/behaviors ported faithfully rather than
+"cleaned up."
+
+**The wire protocol is complete.**
+`ssssh/Sources/EternalTerminal/ETTransport.swift`'s `ETTransport` is the
+`NWConnection`-based class wiring `ETPacket`/`ETPacketStreamReader`/
+`ETCrypto`/`ETMessages`/`ETBackedIO` together: the initial `ConnectRequest`/
+`ConnectResponse` handshake (`ETOneShotProto` framing, unencrypted, before
+any crypto state exists), then the **required** `InitialPayload`/
+`InitialResponse` exchange every session needs regardless of whether
+jumphost/port-forwarding is used (a correction to an earlier assumption in
+this file -- see below), then ordinary `TerminalBuffer`/`TerminalInfo`/
+`KEEP_ALIVE` packet I/O through `ETBackedWriter`/`ETBackedReader`, and the
+`ETOneShotProto`-framed `SequenceHeader`/`CatchupBuffer` exchange on
+reconnect.
+
+**Two corrections, both caught by reading `TerminalClient.cpp`'s actual
+constructor/`run()` directly rather than trusting this file's own
+`TerminalUserInfo`/`TermInit` prose** (see the correction on
+`ETTermInit`'s doc comment in `ETMessages.swift`): those two message types
+are **not** part of the client-visible wire protocol at all -- they're
+almost certainly exchanged between `etserver` and `etterminal` over their
+own local IPC, never sent or read by the client. What the client actually
+sends unconditionally after connecting is `InitialPayload` (an empty one,
+for a session with no port-forwarding: `jumphost: false`, empty
+`reversetunnels`, empty `environmentvariables`), and it blocks (up to
+three 1-second polls in the real client) for `InitialResponse` before
+proceeding -- skip this step and a real `etserver` will simply never
+progress the session past the handshake.
+
+**Verified end-to-end against a real, unmodified `etserver` in the same
+Docker container `ETBootstrap` proved out** -- not just unit-tested with
+mocks, which is the only way a bug like the one below could have been
+caught. A standalone SwiftPM sandbox executable drove the full stack:
+`ETBootstrap.detect` for id/passkey, `ETTransport` for the TCP session,
+sending `echo MARKER_12345\n` through a real interactive bash shell and
+observing the echoed marker come back through decrypted, decoded
+`TerminalBuffer` packets.
+
+**A real reconnect bug this live run caught, not a hand-crafted unit
+test**: `Connection::recover` (`src/base/Connection.cpp`) calls
+`writer->recover(...)` *before* `writer->revive(socketFd)` -- relying on
+`recover()`'s own guard that it must run while still disconnected. An
+earlier version of `ETTransport.handleConnectResponse`'s reconnect branch
+called `writer.revive(connected: true)` immediately upon receiving the
+reconnect `ConnectResponse`, *before* the `SequenceHeader`/`CatchupBuffer`
+exchange that actually calls `recover()` -- which made `recover()` throw
+`.stillConnected` every time. This passed every unit test (none of them
+exercised the real ordering across two separate one-shot messages) and
+only surfaced against live infrastructure: a genuine ~15-second network
+blackout induced via `iptables -A INPUT -p tcp --dport 2022 -j DROP`
+inside the container (needs `--cap-add=NET_ADMIN` at `docker run` time --
+a plain container can't run `iptables` at all, confirmed directly, exit
+code 4 "Permission denied (you must be root)" even as root, since it's a
+capability gate not a UID one), forcing the transport's own keepalive
+timeout to detect the dead connection and attempt a real reconnect. Fixed
+by moving `writer.revive(connected: true)` to `handleCatchupBuffer`, after
+`recover()` has already run and returned -- matching `Connection::recover`'s
+exact order (`reader->revive(...)` then `writer->revive(...)`, both only
+at the very end). Re-ran the same blackout-then-reconnect scenario
+afterward and confirmed a command sent after the blackout round-tripped
+correctly through the recovered session. If you ever touch the reconnect
+path in `ETTransport`, re-verify it this same way -- against a real
+blackout, not just by re-reading the code -- since this exact class of
+ordering mistake passed every other check available.
+
+### UI integration -- wired into SSHConnection, mutually exclusive with Mosh
+
+`ETTransport` is now wired into `SSHConnection.runSession` the same way
+`MoshTransport` is: a settings toggle ("Auto-Upgrade to Eternal Terminal",
+`SettingsView`/`AppSettingsKeys.autoUpgradeToET`) gates an upgrade attempt
+that races against a speculative plain-SSH PTY channel opened on the same
+`client` (see the Concurrency architecture section above for why that race
+exists at all). **Correction to this section's own earlier assumption**:
+it previously guessed ET's bootstrap "doesn't obviously need a race the way
+Mosh's does" -- wrong. `ETBootstrap.detect` is itself an SSH round trip
+(the `etterminal` exec) plus a TCP ping, and `ETTransport`'s
+`onEstablished` only fires after a *further* TCP handshake and two full
+protocol round trips (`ConnectRequest`/`ConnectResponse`, then
+`InitialPayload`/`InitialResponse`) -- strictly more latency than Mosh's
+single-UDP-packet confirm, so skipping the race and gating the PTY on this
+outcome would have made every ET-enabled connection slower than plain SSH
+whenever ET turned out to be unavailable. It races exactly like Mosh does,
+just with a longer confirmation timeout (`etConfirmationTimeout` = 4s vs.
+`moshConfirmationTimeout` = 2s, reasoned through in its own doc comment)
+to account for that extra round-trip cost.
+
+**Auto-Upgrade to Mosh and Auto-Upgrade to Eternal Terminal are mutually
+exclusive in `SettingsView`** -- turning one on turns the other off
+(`.onChange` on each `@AppStorage` binding) -- because `runSession` only
+ever attempts one upgrade path per connection (`UpgradeMode` picks
+whichever toggle is on, or neither); the exclusivity lives in the UI
+because there'd otherwise be no way to express "both happen to be on" as
+anything other than silent, unexplained precedence. `HandoffOutcome.moshWon`
+was renamed to `upgradeWon` and the race's internal `RaceEvent`/messaging
+generalized (see `attemptETUpgrade`, added alongside the existing
+`attemptMoshUpgrade`) rather than duplicating the whole race loop for a
+second transport.
+
+**Verified**: full unit test suite (161 tests) and a clean `xcodebuild`
+build with the new toggle/wiring in place; the app was launched in the iOS
+Simulator to confirm it still starts and renders normally with these
+changes present. **Not verified, and worth being explicit about rather
+than claiming otherwise**: this session had no tap-driven UI automation
+tool available for the iOS Simulator (unlike the Chrome extension used for
+web work) -- AppleScript/System Events control of `Simulator.app` was
+attempted and failed (no accessibility automation permission available in
+this environment) -- so the mutual-exclusivity toggle behavior and a live
+Eternal Terminal session driven through the app's actual UI (as opposed to
+`ETTransport` alone, already proven in the standalone SwiftPM sandbox) have
+only been verified by code review, not by tapping through the app itself.
+If you pick this up next, that's the first thing worth doing by hand in
+the Simulator or on a device before trusting this integration further.
+
+### Still open
+
+- `ETBootstrap`+`ETTransport`'s interaction with `HostKeyStore`/Face ID/
+  background execution -- entirely unexamined, unlike Mosh's dedicated
+  investigation of each.
+- Real Wi-Fi-to-cellular handoff and iOS background-suspension behavior
+  for a live `NWConnection`-based TCP session -- only an induced Docker
+  network blackout has been tested, the same caveat Mosh's own roaming
+  section carries for its UDP transport.
+- `ETTransport`'s fixed 5-second keepalive interval (`MAX_CLIENT_KEEP_ALIVE_DURATION`,
+  matching the real client's own default) hasn't been tuned or tested
+  against a slow/high-latency link, the same open item Mosh's constants
+  carry.
+- The mutual-exclusivity toggle and a live Eternal Terminal session
+  through the app's actual UI (not just `ETTransport` standalone) haven't
+  been tap-tested -- see "UI integration" above for why.
 
 ## TestFlight release notes
 
