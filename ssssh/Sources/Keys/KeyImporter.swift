@@ -28,7 +28,19 @@ enum KeyImporter {
         guard let text = String(data: fileContents, encoding: .utf8) else {
             throw ImportError.invalidKey("That file isn't readable as text.")
         }
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Normalize CRLF/CR line endings to plain LF *before* trimming --
+        // both Citadel's SSHKeyDetection and its OpenSSH.PrivateKey parser
+        // only strip "\n" when flattening the PEM body down to base64, not
+        // "\r". A key with CRLF line endings (e.g. generated on Windows, or
+        // round-tripped through an editor that normalizes line endings)
+        // otherwise leaves a stray "\r" embedded in what's supposed to be
+        // pure base64, which fails to decode and surfaces as a generic,
+        // misleading "That doesn't look like an OpenSSH private key" --
+        // even though the key itself is perfectly valid.
+        let normalized = text
+            .replacingOccurrences(of: "\r\n", with: "\n")
+            .replacingOccurrences(of: "\r", with: "\n")
+        let trimmed = normalized.trimmingCharacters(in: .whitespacesAndNewlines)
 
         let detected: SSHKeyType
         do {

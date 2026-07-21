@@ -37,6 +37,44 @@ struct KeyImporterTests {
         #expect(imported.privateKeyData == original.rawRepresentation)
     }
 
+    // Regression test: a key with CRLF line endings (e.g. generated on
+    // Windows, or round-tripped through an editor that normalizes line
+    // endings) used to fail with a misleading "That doesn't look like an
+    // OpenSSH private key" error, because neither this app nor Citadel's
+    // parser stripped "\r" when flattening the PEM body -- a stray "\r"
+    // survived into what's supposed to be pure base64 and broke decoding,
+    // even though the key itself was perfectly valid.
+    @Test func importsAKeyWithCRLFLineEndings() throws {
+        let original = Curve25519.Signing.PrivateKey()
+        let armored = original.makeSSHRepresentation(comment: "original-comment")
+        let crlf = armored.replacingOccurrences(of: "\n", with: "\r\n")
+
+        let imported = try KeyImporter.importEd25519(
+            fileContents: Data(crlf.utf8),
+            passphrase: "",
+            comment: "my-label"
+        )
+        #expect(imported.privateKeyData == original.rawRepresentation)
+    }
+
+    // A leading UTF-8 BOM (e.g. a key file saved as "UTF-8 with BOM" by
+    // Notepad on Windows) doesn't break import -- Swift's UTF-8 decoding
+    // strips it transparently. Kept as an explicit regression test since
+    // it's the same class of cross-platform concern as the CRLF case above.
+    @Test func importsAKeyWithALeadingUTF8BOM() throws {
+        let original = Curve25519.Signing.PrivateKey()
+        let armored = original.makeSSHRepresentation(comment: "original-comment")
+        var withBOM = Data([0xEF, 0xBB, 0xBF])
+        withBOM.append(Data(armored.utf8))
+
+        let imported = try KeyImporter.importEd25519(
+            fileContents: withBOM,
+            passphrase: "",
+            comment: "my-label"
+        )
+        #expect(imported.privateKeyData == original.rawRepresentation)
+    }
+
     // Real ssh-keygen output (`ssh-keygen -t ed25519 -N "correct horse
     // battery staple"`), not a hand-built fixture -- covers the actual
     // encrypted-key decode path, not just our own re-encoding of it.
