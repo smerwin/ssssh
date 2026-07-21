@@ -948,6 +948,316 @@ verified here the same way CLAUDE.md's SSH section recommends for
 Process/NSTask: a standalone macOS SwiftPM executable importing the same
 Mosh sources and Citadel, not an iOS Simulator XCTest.
 
+## Eternal Terminal support (not started -- investigation notes)
+
+Nobody has written any code for this yet. This is a scoping writeup from
+source research, kept here so a future session doesn't have to re-derive
+it -- treat it as a starting point, not a finished design. Every claim
+below is cited against `MisterTea/EternalTerminal`'s actual source (its
+`src/` and `proto/` directories), the same way the Mosh section above is
+grounded in `mobile-shell/mosh`'s source rather than general knowledge.
+
+**Bottom line**: ET's wire protocol is *architecturally simpler* to
+reimplement than Mosh's -- a reliable-byte-stream resume over TCP, not a
+framebuffer-diff state-sync protocol -- and that simplicity is exactly why
+ET supports native terminal scrolling and `tmux -CC` where Mosh can't (see
+"Why native scrolling and tmux -CC work" below). But its deployment model
+is a real constraint, decided deliberately rather than worked around: **ET
+support in this app will only ever work against hosts that already have
+`etserver` installed and running as a persistent system service** -- see
+"Server-side prerequisites" below for why, and why the alternative
+(ssssh installing and launching a persistent daemon on someone else's
+host) was rejected rather than pursued.
+
+### Bootstrap flow -- and why it's fundamentally different from Mosh's
+
+The `et` client's first network action, before even attempting SSH, is a
+bare TCP `connect()`+`close()` ping to `<host>:2022` (`ping()` in
+`src/terminal/TerminalClientMain.cpp`; port is configurable via `-p`,
+default `2022`). Only after that succeeds does it bootstrap over SSH via
+`SshSetupHandler::SetupSsh` (`src/terminal/SshSetupHandler.cpp`), which
+generates a random 16-char id and 32-char passkey *client-side*
+(`genRandomAlphaNum`, alphabet `0-9A-Za-z` -- 32 chars is roughly 190 bits
+of entropy) and runs, over the existing trusted SSH connection:
+
+```
+echo '<id>/<passkey>_<clientTerm>' | etterminal --verbose=<v> [--serverfifo=...]
+```
+
+`etterminal`'s stdout is scanned for a line containing `IDPASSKEY:`; the
+`id/passkey` substring after it is parsed out (a newer server can
+override the client-proposed id/passkey with its own -- the client
+deliberately mangles its own proposed id's first two characters to signal
+"I'm willing to accept a server-generated one instead").
+
+**The critical difference from Mosh**: `etterminal`, run per-session over
+SSH, is *not* a self-contained server-per-session process the way
+`mosh-server` is. It's a small client of an *already-running* `etserver`
+daemon: `TerminalServerMain.cpp` shows `etserver` (a different binary) is
+the actual TCP listener, with a `--daemon` flag and `--pidfile` (default
+`/var/run/etserver.pid`) -- designed to run as a persistent system
+service (the upstream repo ships systemd/rc.d deployment files at its
+root). `etterminal` registers the freshly-generated id/passkey with that
+already-listening daemon over a local Unix-domain socket router
+(`UserTerminalRouter`) so the daemon knows to accept that id on the TCP
+port it's already bound to. Mosh's bootstrap works because `mosh-server`
+can be launched fresh, per connection, from a one-shot SSH exec, with no
+persistent state needed on the remote host beforehand (this app's own
+`MoshBootstrap.swift` exploits exactly that). ET's bootstrap only ever
+*registers a session* with a daemon that has to already be alive -- it
+never starts the daemon itself.
+
+### Server-side prerequisites -- the deployment decision, made deliberately
+
+`etserver` must be a **pre-installed, already-running persistent daemon**,
+bound to a fixed TCP port, reachable *before* the SSH bootstrap even runs
+(the client's `ping()` check happens first). Two ways this app could have
+handled that were weighed:
+
+1. **Only support hosts where `etserver` is already running** -- detected
+   the same way `MoshBootstrap.detect`'s failure path already handles "Mosh
+   not available on this host," surfaced as a clear message rather than a
+   cryptic connection failure. A real, stated limitation on which hosts
+   this feature works against, but no new invasive behavior.
+2. Have ssssh itself install and launch `etserver --daemon` over SSH on
+   first use -- silently leaving a persistent, always-listening network
+   service running on someone else's machine indefinitely. A materially
+   bigger and more invasive ask than anything else this app does, and it
+   still depends on the `etserver`/`etterminal` binaries being installable
+   on whatever the target platform is.
+
+**Decided: option 1.** ET support here is scoped to hosts that already run
+`etserver` as a service; this app will never install or launch a
+persistent daemon on a user's target host. If this ever needs revisiting,
+that's a product decision to make explicitly again, not a default to fall
+back into.
+
+### Transport -- plain TCP, no TLS
+
+`TcpSocketHandler::connect()` (`src/base/TcpSocketHandler.cpp`) does a
+bare `getaddrinfo`/`socket`/`connect()` with `SOCK_STREAM` -- no TLS
+anywhere in the handler. The client-to-server hop is a single long-lived
+TCP connection to `<host>:<port>`; security comes entirely from the
+secretbox-encrypted application-layer packets below, not transport
+security. This is the simpler half of the client work compared to Mosh:
+`Network.framework`'s `NWConnection` over `.tcp` handles reliable,
+in-order, congestion-controlled delivery for free -- none of Mosh's custom
+UDP fragmentation/reassembly (`MoshFragment`/`MoshFragmentAssembly`) or
+roaming-via-rebuild machinery (`MoshTransport`'s `NWPathMonitor` handling)
+is needed, since TCP's own retransmission handles ordinary packet loss,
+and ET's own resume protocol (below) handles a full connection loss the
+way `MoshTransport`'s roaming does for UDP.
+
+### Wire framing and crypto
+
+Every message on the wire is a **4-byte big-endian length prefix**
+(covering the entire following packet, header included) plus a serialized
+`Packet` (`src/base/Packet.hpp`): `[1 byte: encrypted flag][1 byte:
+packet type][ciphertext-or-plaintext payload]`. The 2-byte flag+type
+prefix is **not** covered by encryption or the MAC -- only `payload` is.
+Payloads are real **protobuf** (proto2, `LITE_RUNTIME`, schemas in
+`proto/ET.proto`/`proto/ETerminal.proto`) -- unlike Mosh, where this
+repo's `MoshProtobuf.swift` deliberately hand-rolled a minimal reader/
+writer because Mosh's three message shapes never needed more than varint
+and length-delimited fields. ET's schemas include at least one `map<string,
+string>` field (`InitialPayload.environmentvariables`) and more message
+variety overall (11 `TerminalPacketType` values vs. Mosh's 3), so a
+from-scratch client here would need to either extend a hand-rolled reader/
+writer to cover map fields, or take a real dependency on SwiftProtobuf --
+worth deciding deliberately rather than defaulting to whichever seems
+easiest at the time.
+
+Encryption is **libsodium's `crypto_secretbox_easy`/`_open_easy`**
+(`src/base/CryptoHandler.cpp`) -- XSalsa20-Poly1305, 32-byte key, 24-byte
+nonce, 16-byte MAC appended to ciphertext. Confirmed specifics that matter
+for a Swift port:
+- **The key is the raw ASCII bytes of the 32-character passkey from
+  bootstrap, used directly** -- no HKDF/hash step. `crypto_secretbox_KEYBYTES`
+  is 32 and the passkey is exactly 32 alphanumeric characters, so the
+  string *is* the key material verbatim.
+- **Nonce is a 24-byte counter, incremented by one after every single
+  encrypt/decrypt call**, seeded to zero except the *last* byte, which is
+  a per-direction discriminator (`CLIENT_SERVER_NONCE_MSB = 0`,
+  `SERVER_CLIENT_NONCE_MSB = 1`, `src/base/Headers.hpp`). Each side holds
+  **two independent crypto states** -- one for its reader (decrypting the
+  peer's stream, seeded with the *peer's* direction byte) and one for its
+  writer (encrypting its own stream, seeded with its *own* direction
+  byte). Nonce reuse under one key is exactly as catastrophic here as it
+  is for Mosh's AES-OCB (`MoshOCB`'s own doc comment covers why) -- a
+  Swift port needs the identical "increment on every single call, never
+  skip, never reset except on a genuinely fresh key" discipline.
+  CryptoKit has no XSalsa20-Poly1305 (it ships AES-GCM and ChaChaPoly, not
+  this), so this needs either a from-scratch implementation -- mirroring
+  how `MoshOCB.swift` implemented AES-OCB from RFC 7253's pseudocode
+  against CommonCrypto -- or a dependency on libsodium/Swift-Sodium,
+  again worth deciding deliberately rather than defaulting.
+
+**Handshake**: `ConnectRequest{clientId, version}` -> `ConnectResponse{status,
+error}` is sent *before any crypto state exists* -- the 16-char id (not
+the passkey) travels in cleartext over the fresh TCP connection. Safe
+because the actual secret (the passkey) is never transmitted over this
+TCP channel at all; both sides already possess it independently from the
+SSH-bootstrap step, the same "rides an already-trusted SSH connection, no
+separate trust decision needed" shape as this app's existing Mosh
+support. `ConnectStatus` is one of `NEW_CLIENT`/`RETURNING_CLIENT`/
+`INVALID_KEY`/`MISMATCHED_PROTOCOL` -- protocol version is a hard
+equality check (`PROTOCOL_VERSION = 6` as of this research), so a Swift
+client needs to track upstream bumps of that constant.
+
+### Resumption/reconnect protocol -- much simpler than Mosh's SSP
+
+ET's "eternal" property is **not** a framebuffer-diff state-sync protocol
+like Mosh's SSP -- it's a straightforward reliable-message-replay-by-
+sequence-number scheme layered under an otherwise ordinary byte pipe:
+- The writer side keeps every encrypted packet it has ever sent in a
+  bounded backup buffer, tagged with a monotonically increasing sequence
+  number (a count of packets, not bytes). While a socket is live, this is
+  trimmed to a byte cap (64 MB in the reference implementation); while
+  disconnected, nothing is evicted until a second, separate cap is hit, at
+  which point further writes are backpressured rather than silently
+  dropping data.
+- The reader side counts every packet it has successfully decoded as its
+  own sequence number.
+- On reconnect, each side exchanges its reader's sequence number over the
+  *new* raw socket ("here's how much of your stream I've actually
+  consumed"), and the peer replays exactly the tail of its backup buffer
+  the other side is missing -- still encrypted, decrypted the same way a
+  live read would be, fed in before ordinary reads resume from the new
+  socket.
+- A peer claiming to be *ahead* of what was actually sent is a hard
+  protocol-invariant violation (fatal in the reference implementation,
+  not gracefully handled); a peer missing packets already evicted from the
+  backup buffer is a recoverable failure -- that specific reconnect
+  attempt is abandoned and retried, not fatal to the whole session.
+- Server-side, a brand-new TCP accept whose client id matches an existing,
+  live session is spliced onto that session's existing state, regardless
+  of source IP/port -- the same "any new source the instant it decrypts
+  correctly is accepted" roaming philosophy as Mosh, just over TCP
+  reconnects instead of UDP source-address changes.
+
+**What this means for a Swift client**: nothing resembling
+`MoshTransport`'s `equivalentSince` framebuffer-equivalence-range tracking
+(this repo's own hard-won fix -- see the Mosh section above) is needed at
+all. ET's resume is content-blind: it resends exact bytes already sent,
+by count, with no equivalent of "two diffs from the same reference aren't
+guaranteed to be prefix-related" to reason about, because ET never
+computes a diff in the first place -- it only ever remembers and replays
+literal past messages. A Swift port's equivalent of that backup/replay
+machinery is a bounded deque of already-encrypted packets plus two
+integer counters -- meaningfully less protocol-state complexity than the
+Mosh work already done here, independent of the deployment-model
+constraint above.
+
+### Why native scrolling and tmux -CC work -- confirmed as a "dumb pipe"
+
+Confirmed directly, not just inferred: ET does **zero terminal-state
+modeling of any kind**, client or server. Server-side, the reference
+implementation does a literal `read()` off the PTY master and stuffs the
+raw bytes straight into a `TerminalBuffer` protobuf message -- no parsing,
+no escape-sequence interpretation, no framebuffer. Client-side, those
+bytes are unwrapped and written straight to the local console unmodified
+in both directions -- no local-echo prediction, no epoch/glitch tracking,
+nothing resembling this app's `MoshPredictionEngine` at all.
+
+This confirms the hypothesis directly: because ET never interprets the
+byte stream as *terminal content*, only as an opaque payload to move
+reliably, there's nothing in its protocol that could conflict with a real
+terminal's native scrollback (a property of whatever's rendering the raw
+bytes -- SwiftTerm, untouched by ET) or with tmux control-mode's own
+escape-sequence framing riding *inside* that same opaque byte stream (ET
+has no idea that framing exists, which is exactly why it can't break it).
+Contrast with Mosh, whose SSP works by having `mosh-server` maintain its
+own terminal emulation of the PTY output and resynchronizing the
+*client's* screen from that emulated model's framebuffer diff rather than
+a byte-identical passthrough (see this repo's Mosh section, "Why the
+client doesn't model the terminal") -- tmux control-mode's framing and a
+real terminal's native scrollback both depend on seeing the literal,
+unmangled byte stream a program produced, which Mosh's model doesn't
+guarantee bit-for-bit and ET's byte-pipe model does by construction.
+
+Practical implication for this app: an ET client, feeding decoded
+`TerminalBuffer` bytes straight into the same `SwiftTerm.TerminalView`
+this app already uses for plain SSH and Mosh, needs **no analog of
+`MoshPredictionEngine` or `MoshTransport`'s baseline tracking at all** --
+architecturally closer to this app's existing plain-SSH PTY path
+(`SSHConnection`'s `onOutput`/`send` feeding/reading a Citadel channel
+directly) than to the Mosh path. One coalescing detail worth carrying
+over regardless: the reference client explicitly batches every
+currently-available packet into one write per read-loop iteration rather
+than writing each packet individually, noting that per-packet writes
+cause visible flicker (e.g. a screen-clear arriving in one write followed
+immediately by the repaint in the next). A Swift client feeding SwiftTerm
+should do the same -- drain everything currently available before calling
+`view.feed(byteArray:)`, not feed per-packet.
+
+### PTY resize propagation
+
+Client-driven polling in the reference implementation, not signal-driven:
+the client's main loop polls its local terminal size every iteration and,
+on any change, sends a `TERMINAL_INFO{id, row, column, width, height}`
+packet. For an iOS client this maps onto
+`SwiftTerm.TerminalViewDelegate.sizeChanged` exactly the way this app's
+existing `SSHConnection.resize(cols:rows:)` and `MoshTransport.resize(cols:rows:)`
+already do -- send a `TerminalInfo` packet whenever SwiftTerm reports a
+size change, no polling loop needed on this side since SwiftUI/UIKit
+already delivers resize events.
+
+### Auth -- rides the SSH bootstrap, same as this app's Mosh support
+
+No separate trust store or keypair needed: the entire security model is
+"the passkey was exchanged over an SSH channel the user already trusts,
+and subsequent TCP traffic is authenticated by successfully decrypting
+with that shared secret." No ET-specific known-hosts file, no separate
+key generation/pinning UI -- the same shape as this app's existing
+`HostKeyStore`-gated SSH trust already covering the Mosh bootstrap. This
+part of an ET integration bolts onto the existing
+`SSHConnection`/Citadel flow without new trust-decision UI.
+
+### iOS-specific risks and open questions, not yet investigated
+
+- **Background execution**: this app's Mosh roaming leans on
+  `NWPathMonitor`/UDP survivability plus `SessionManager`'s background
+  keepalive budget (`maxBackgroundDuration` = 5 minutes,
+  `ssssh/Sources/SSH/SessionManager.swift`). ET's reconnect is TCP-based
+  and driven by client-side polling. Untested whether iOS's background
+  networking limits interact any differently with ET's plain-TCP-reconnect
+  model than they already do with this app's existing plain-SSH TCP
+  sessions -- likely no worse, since it's the same transport family, but
+  not verified.
+- **`Network.framework` TCP option coverage**: no unusual socket-option
+  tuning was spotted in the reference `TcpSocketHandler` during this
+  research pass, but that pass didn't dig deep into keepalive/`TCP_NODELAY`
+  specifics -- worth a dedicated check before implementing.
+- **Verification story**: no `Process`/`NSTask` dependency once bootstrap
+  is done (unlike some Mosh-adjacent tooling concerns), so the same
+  "standalone macOS SwiftPM executable" pattern this repo already uses to
+  verify Mosh against a real `mosh-server` (see "Verifying against a real
+  mosh-server" above) applies here too, against a real `etserver` --
+  installed via Docker the same way the Mosh/SSH verification containers
+  are, not yet set up.
+- **Port-forwarding / jumphost / SSH-agent-forwarding** (`-t`, `-r`,
+  `--jumphost`, `-f` in the reference client) are out of scope for a first
+  pass -- this app has no port-forwarding UI at all today. Flagging only
+  so a future implementer doesn't mistake `PORT_FORWARD_*` packet types
+  for something required for basic terminal I/O; they aren't (they're a
+  distinct, skippable packet-type branch unrelated to
+  `TERMINAL_BUFFER`/`TERMINAL_INFO`/`KEEP_ALIVE`).
+
+### Recommended scope for a first pass
+
+With the deployment-model decision already made above, the protocol work
+itself is smaller than the Mosh implementation already in this repo: no
+UDP fragmentation, no framebuffer-diff resync, no client-side prediction
+engine -- just TCP framing, one from-scratch crypto primitive
+(XSalsa20-Poly1305, decided deliberately per "Wire framing and crypto"
+above), a small sequence-numbered resend buffer, and protobuf message
+plumbing (also decided deliberately: hand-rolled-with-map-support vs.
+SwiftProtobuf). A first pass should build detection first --
+`ETBootstrap.detect`, mirroring `MoshBootstrap.detect`'s shape and
+failure-surfacing -- so "this host doesn't have `etserver` running" is a
+clear, expected message rather than a cryptic connection failure, before
+any wire-protocol code is written at all.
+
 ## TestFlight release notes
 
 `ci_scripts/ci_pre_xcodebuild.sh` writes a freshly generated three-line
