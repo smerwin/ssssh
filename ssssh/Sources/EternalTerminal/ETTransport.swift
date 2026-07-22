@@ -105,6 +105,37 @@ final class ETTransport: @unchecked Sendable {
     private var keepAliveTimer: DispatchSourceTimer?
     private var waitingOnKeepAlive = false
 
+    /// True from the moment a connection failure is first detected until a
+    /// replacement `NWConnection` object actually exists (set in
+    /// `scheduleReconnect`'s fired work item). A dead connection is often
+    /// reported by more than one signal at once -- e.g. the keepalive
+    /// timer's "missed a keepalive" check and the connection's own
+    /// `.failed` state event, or a `.failed` state and a `receive` error --
+    /// and every one of those signals can already be enqueued on `queue`
+    /// before the first one's `connection.cancel()`/`stateUpdateHandler =
+    /// nil` take effect. The per-callback identity guards elsewhere in this
+    /// file (`receiveLoop`, `sendFramed`, `armConnection`) only catch a
+    /// callback that's stale *after* `self.connection` has been reassigned
+    /// to a new instance -- they do nothing for two callbacks that both
+    /// still reference the *same, not-yet-replaced* connection, which is
+    /// exactly the gap this flag closes: a second failure report for a
+    /// connection already being torn down is dropped outright rather than
+    /// running `scheduleReconnect` a second time. Without this, the first
+    /// (typically zero-delay) reconnect can create a connection that fully
+    /// recovers and goes live, and then the second, now-redundant scheduled
+    /// reconnect fires anyway -- unconditionally creating *another* new
+    /// connection and overwriting the already-live one, without ever
+    /// calling `writer.revive(connected: false)` for this new attempt
+    /// (that only happens in the failure handler, not the reconnect
+    /// closure itself). `writer.connected` is left `true` from the first
+    /// attempt's success, so the second attempt's own
+    /// `handleSequenceHeader` throws `ETBackedWriter.RecoverError
+    /// .stillConnected` -- reported directly, reproduced on a build that
+    /// already had every stale-callback identity guard in place, which is
+    /// what pointed at this being a distinct bug rather than a leftover
+    /// instance of those.
+    private var isTearingDown = false
+
     /// Counts consecutive failed *reconnect* attempts -- both an ordinary
     /// connection-level failure (`.failed` state, a send/receive error) and
     /// a rejected reconnect `ConnectResponse` (see `handleConnectResponse`)
@@ -286,7 +317,7 @@ final class ETTransport: @unchecked Sendable {
     }
 
     private func handleConnectionFailure(reason: String) {
-        guard !isStopped, !hasReportedFatalError else { return }
+        guard !isStopped, !hasReportedFatalError, !isTearingDown else { return }
         keepAliveTimer?.cancel()
         keepAliveTimer = nil
 
@@ -297,6 +328,7 @@ final class ETTransport: @unchecked Sendable {
             return
         }
 
+        isTearingDown = true
         writer.revive(connected: false)
         connection.stateUpdateHandler = nil
         connection.cancel()
@@ -319,6 +351,14 @@ final class ETTransport: @unchecked Sendable {
         let delay = Self.reconnectBackoff(forFailureCount: consecutiveReconnectFailures)
         queue.asyncAfter(deadline: .now() + delay) { [weak self] in
             guard let self, !self.isStopped, !self.hasReportedFatalError else { return }
+            // From here on, a *new* connection object exists -- any further
+            // failure report is either genuinely about this new instance
+            // (handled by the identity guards on its own callbacks) or a
+            // stale report about the old one (also caught by those same
+            // guards, since `self.connection` no longer matches it).
+            // `isTearingDown` has done its job of preventing a second,
+            // redundant reconnect while no replacement existed yet.
+            self.isTearingDown = false
             self.connection = NWConnection(host: self.host, port: self.port, using: .tcp)
             self.armConnection(isReconnect: true)
             self.connection.start(queue: self.queue)
@@ -419,9 +459,13 @@ final class ETTransport: @unchecked Sendable {
             }
             // Rejected on a *reconnect* -- see `consecutiveReconnectFailures`'
             // doc comment for why this is retried with backoff instead of
-            // torn down immediately.
+            // torn down immediately. Guarded by `isTearingDown` for the
+            // same reason `handleConnectionFailure` is -- see its doc
+            // comment.
+            guard !isTearingDown else { return }
             keepAliveTimer?.cancel()
             keepAliveTimer = nil
+            isTearingDown = true
             writer.revive(connected: false)
             connection.stateUpdateHandler = nil
             connection.cancel()

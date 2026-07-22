@@ -1836,6 +1836,73 @@ new, unrelated bug -- `NWConnection` has more than these three completion
 shapes (`receive`, `send`'s `.contentProcessed`, `stateUpdateHandler`) if
 a future change adds one.
 
+### An eighth real bug: overlapping failure signals for the *same* connection each ran their own reconnect, leaving `writer.connected` stuck `true` (`RecoverError.stillConnected`, again)
+
+Reported directly, reproduced by the user on TestFlight build 59 --
+confirmed (via the build's Xcode Cloud "Source" commit, `69c9a74`) to
+already include *every* stale-callback identity guard from the seventh
+real bug above. That ruled out a leftover instance of that bug and
+pointed at something distinct: the exact same symptom,
+`ETBackedWriter.RecoverError.stillConnected` thrown from
+`handleSequenceHeader`, but from a different root cause.
+
+The identity guards added for the seventh bug only catch a callback that
+fires *after* `self.connection` has already been reassigned to a new
+instance -- they do nothing when **two independent, simultaneously-true**
+failure signals both still reference the *same, not-yet-replaced*
+connection. That's a real, likely scenario for an actual dead connection:
+its own `.failed` state event, a `receive`/`send` error, and the keepalive
+timer's "missed a keepalive" check can all become true from the same
+underlying event around the same moment, and more than one of those can
+already be sitting enqueued on `queue` before the first one's
+`connection.cancel()`/`stateUpdateHandler = nil` actually takes effect.
+`handleConnectionFailure` (and `handleConnectResponse`'s rejected-reconnect
+branch, which does the identical teardown) was not idempotent against
+this: each enqueued signal ran the *full* teardown-and-reconnect sequence
+independently, each calling `scheduleReconnect`. The first (typically
+zero-delay) attempt creates a connection that can fully reconnect and go
+live well before the second, now-completely-redundant attempt's longer
+backoff elapses. When that second attempt's delayed closure fires, it
+unconditionally creates *another* new connection and overwrites the
+already-live one -- but never calls `writer.revive(connected: false)` for
+this new attempt (that only happens inside the failure handler, not the
+reconnect closure itself), so `writer.connected` is left `true` from the
+first attempt's success. The second attempt's own `handleSequenceHeader`
+then throws `.stillConnected`, because as far as `writer` is concerned it
+never disconnected in the first place.
+
+Fixed with a new `isTearingDown` flag: `true` from the moment a failure is
+first handled until a replacement `NWConnection` actually exists (set
+right where `scheduleReconnect`'s fired work item creates it), checked at
+the top of both `handleConnectionFailure` and `handleConnectResponse`'s
+rejection branch. A second failure report arriving while `isTearingDown`
+is still `true` is dropped outright as a duplicate signal about a
+connection already being torn down, rather than kicking off a competing
+reconnect. This is deliberately a *separate* mechanism from the seventh
+bug's per-callback identity guards, not a replacement for them -- the two
+close different gaps: `isTearingDown` covers the window between "a failure
+was detected" and "a replacement connection object exists" (where the
+identity guards can't help, since every signal still legitimately matches
+`self.connection`), while the identity guards cover the window *after* a
+replacement exists (where a callback tied to the old instance would
+otherwise still be acted on). A genuine later failure of the *new*
+connection is unaffected either way: `isTearingDown` resets to `false` as
+soon as that new connection is created, and its own callbacks carry their
+own, correctly-matching identity.
+
+Verified with the full test suite (163 tests, unchanged -- this file's own
+existing tests only cover `reportFatalError`/`reconnectBackoff`, the two
+pieces of `ETTransport` that don't need a live socket; the reconnect
+handshake itself is verified against a real `etserver`, per this file's
+own doc comment, not mocked here) and a clean `xcodebuild` build. **Not**
+yet re-verified against a real `etserver` reproducing the actual double-
+signal race (needs either a live flaky-network scenario or a deliberately
+induced one, e.g. forcing both a `.failed` state and a missed keepalive
+for the same connection in a standalone test harness) -- if this exact
+error recurs a *third* time on a build that includes this fix, look for a
+further way `handleConnectionFailure`/`scheduleReconnect` can be entered
+twice for the same connection before assuming it's solved.
+
 ### Still open
 
 - `ETBootstrap`+`ETTransport`'s interaction with `HostKeyStore`/Face ID/
