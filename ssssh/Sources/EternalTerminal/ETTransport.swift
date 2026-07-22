@@ -233,15 +233,35 @@ final class ETTransport: @unchecked Sendable {
     // MARK: - Connection lifecycle
 
     private func armConnection(isReconnect: Bool) {
+        // Captured at registration time for the same reason `receiveLoop`
+        // and `sendFramed` capture it: `connection.stateUpdateHandler = nil`
+        // (set by `handleConnectionFailure`/`handleConnectResponse`'s
+        // rejection branch before cancelling) only prevents *future* state
+        // events from invoking a handler -- it does nothing about a
+        // `.ready`/`.failed` event that Network.framework had already
+        // dispatched onto `queue` before the nil-ing ran. That stale
+        // closure still fires with its already-captured `isReconnect`, and
+        // would otherwise act on `self.connection`/`self.writer` as they
+        // stand *now* (the newer, still-in-progress reconnect's state),
+        // potentially resending a `ConnectRequest` or re-arming a receive
+        // loop on the current connection out of turn, or completing a
+        // reconnect handshake twice -- which can leave `writer`'s connected
+        // flag out of sync with which one-shot step is actually running and
+        // surface as `ETBackedWriter.RecoverError.stillConnected` in
+        // `handleSequenceHeader`.
+        let registeredConnection = connection
         connection.stateUpdateHandler = { [weak self] state in
             guard let self else { return }
-            switch state {
-            case .ready:
-                self.queue.async { self.handleConnectionReady(isReconnect: isReconnect) }
-            case .failed(let error):
-                self.queue.async { self.handleConnectionFailure(reason: "connection failed: \(error.localizedDescription)") }
-            default:
-                break
+            self.queue.async {
+                guard registeredConnection === self.connection else { return }
+                switch state {
+                case .ready:
+                    self.handleConnectionReady(isReconnect: isReconnect)
+                case .failed(let error):
+                    self.handleConnectionFailure(reason: "connection failed: \(error.localizedDescription)")
+                default:
+                    break
+                }
             }
         }
     }
