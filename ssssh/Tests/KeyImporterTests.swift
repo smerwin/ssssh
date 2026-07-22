@@ -100,23 +100,39 @@ struct KeyImporterTests {
         #expect(imported.publicKeyOpenSSH.hasPrefix("ssh-ed25519 "))
     }
 
+    // The user-facing message includes the underlying Citadel failure reason
+    // (e.g. "invalidCheck") so a remote tester can report back exactly what
+    // went wrong without needing device console access -- see KeyImporter's
+    // `categorize`/`technicalDetail`.
     @Test func rejectsAPassphraseProtectedKeyGivenTheWrongPassphrase() {
-        #expect(throws: KeyImporter.ImportError.self) {
-            try KeyImporter.importEd25519(
+        do {
+            _ = try KeyImporter.importEd25519(
                 fileContents: Data(Self.encryptedEd25519Fixture.utf8),
                 passphrase: "definitely not it",
                 comment: "my-label"
             )
+            Issue.record("expected importEd25519 to throw for a wrong passphrase")
+        } catch KeyImporter.ImportError.invalidKey(let message) {
+            #expect(message.contains("passphrase"))
+            #expect(message.contains("invalidCheck"))
+        } catch {
+            Issue.record("expected .invalidKey, got \(error)")
         }
     }
 
     @Test func rejectsAPassphraseProtectedKeyGivenNoPassphrase() {
-        #expect(throws: KeyImporter.ImportError.self) {
-            try KeyImporter.importEd25519(
+        do {
+            _ = try KeyImporter.importEd25519(
                 fileContents: Data(Self.encryptedEd25519Fixture.utf8),
                 passphrase: "",
                 comment: "my-label"
             )
+            Issue.record("expected importEd25519 to throw when no passphrase is given")
+        } catch KeyImporter.ImportError.invalidKey(let message) {
+            #expect(message.contains("passphrase-protected"))
+            #expect(message.contains("missingDecryptionKey"))
+        } catch {
+            Issue.record("expected .invalidKey, got \(error)")
         }
     }
 
