@@ -16,6 +16,10 @@ final class KeyStore {
         keys = fileStore.load(default: [])
     }
 
+    func key(id: UUID) -> SSHKey? {
+        keys.first { $0.id == id }
+    }
+
     func generateKey(label: String, algorithm: SSHKeyAlgorithm = .ed25519) throws -> SSHKey {
         try persist(KeyGenerator.generate(algorithm: algorithm, comment: label), label: label)
     }
