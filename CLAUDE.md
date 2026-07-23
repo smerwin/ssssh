@@ -238,7 +238,7 @@ here's the actual constraint, for whoever picks this up next:
   between those two, not by looking for a third way around Citadel --
   there wasn't one as of Citadel 0.7.x.
 
-## Apple Shortcuts support ("Run Command" implemented; not yet tap-tested through Shortcuts/Siri)
+## Apple Shortcuts support ("Run Command" implemented; `openAppWhenRun = true` after a confirmed on-device Face ID failure)
 
 The **App Intents** framework, declared directly in the `ssssh` app
 target -- no separate extension target needed, since `deploymentTarget.iOS`
@@ -317,34 +317,29 @@ last-writer-wins atomic file write.
 
 ### Open questions / friction points specific to this codebase
 
-- **Face ID/Keychain gating -- still the one open question that could
-  change the whole design, still unverified.** `RunCommandIntent
-  .openAppWhenRun` is currently `false` (the "runs silently from an
-  automation" use case that makes this feature worth having at all), but
-  whether `Keychain.load`'s `LAContext`/`kSecUseAuthenticationContext`
-  call actually surfaces a working Face ID prompt when triggered from
-  Shortcuts/Siri with the app not already foregrounded is **still
-  untested** -- this needs a physical device (or a human manually
-  driving the iOS Simulator's own Shortcuts app plus its Face ID
-  simulation under Features > Face ID; this repo's development
-  environment has no accessibility-automation permission to do that
-  itself, per the "Manual verification" section below). One thing *is*
-  now known that narrows the risk: `SecItemCopyMatching` is documented to
-  fail fast with `errSecInteractionNotAllowed` when it can't show
-  interactive UI, not hang indefinitely -- unlike the host-key-trust risk
-  below, so this is now mapped to a distinct `KeychainError
-  .interactionNotAllowed` case with an actionable message rather than a
-  generic one. That still leaves three real, materially different
-  scenarios genuinely unverified: (1) the app was foregrounded earlier
-  and is merely backgrounded, not force-quit -- most likely to just work;
-  (2) the app was force-quit, intent triggered from the Shortcuts app
-  directly; (3) a Personal Automation firing unattended (phone locked,
-  app not running) -- the actual pitch for this feature, and the
-  scenario most likely to differ from (1)/(2). Verify this on a real
-  device before trusting `openAppWhenRun = false` further; if it turns
-  out interactive auth genuinely can't surface in scenario (3), the
-  fallback is flipping to `openAppWhenRun = true`, which defeats a chunk
-  of the point but keeps the feature usable.
+- **Face ID/Keychain gating -- confirmed broken with `openAppWhenRun =
+  false`, fixed by switching to `true`.** Tested on a real device: running
+  the shortcut by tapping "Run Command" directly in the Shortcuts app
+  (not even an unattended automation -- the easiest, most favorable case)
+  immediately hit `KeychainError.interactionNotAllowed`
+  ("Couldn't show a Face ID/Touch ID prompt in this context"). So the
+  `SecItemCopyMatching`/`kSecUseAuthenticationContext` call genuinely
+  cannot show interactive biometric UI when an App Intent runs with
+  `openAppWhenRun == false`, confirming the worst-case guess this section
+  used to only flag as a risk. `RunCommandIntent.openAppWhenRun` is now
+  `true`: the app opens to the foreground before `perform()` runs, which
+  guarantees Face ID can prompt (confirmed the fast-fail path -- not yet
+  independently re-confirmed that the happy path with `true` prompts and
+  succeeds end-to-end on device, though there's no reason to expect
+  otherwise once the app is genuinely foregrounded the same way a normal
+  connect from the app's own UI already works). This sacrifices the
+  "runs silently from an unattended automation" ideal that motivated
+  `false` in the first place -- the app will visibly open every time this
+  runs -- but that's the real tradeoff now, not a hypothetical one.
+  `KeychainError.interactionNotAllowed` stays in place regardless, since
+  it's a legible failure mode for any future path that tries background
+  execution again (e.g. if Face ID is ever swapped for something that can
+  authenticate without UI).
 - **Host-key trust -- resolved, not just flagged.** `HostKeyStore
   .evaluate` (see "Concurrency architecture" above) waits indefinitely on
   a `CheckedContinuation` for an unrecognized host, resolved only by the
@@ -387,13 +382,11 @@ the Face ID question above.
 
 ### Still open
 
-- The Face ID/background-execution question above -- the next thing to
-  verify before trusting this feature further, not an implementation
-  detail to defer indefinitely.
-- Tap-testing through the actual Shortcuts app / Siri / a Personal
-  Automation, on a physical device or via hands-on Simulator interaction
-  (see the Face ID bullet above for why this environment can't do either
-  itself).
+- Re-confirming on a real device that `openAppWhenRun = true` actually
+  fixes the Face ID prompt end-to-end (app opens, prompt appears,
+  command runs, output returns to Shortcuts) -- only the failure with
+  `false` has been directly observed on-device so far, not the full
+  happy path with `true`.
 - The "Connect" intent (second pass, out of scope here).
 
 ## Concurrency architecture (why the SSH code looks the way it does)

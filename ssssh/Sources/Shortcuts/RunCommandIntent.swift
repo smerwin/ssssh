@@ -4,15 +4,15 @@ struct RunCommandIntent: AppIntent {
     static let title: LocalizedStringResource = "Run Command"
     static let description = IntentDescription("Runs a command over SSH on a saved host and returns its output.")
 
-    /// Deliberately `false`: this is the "runs silently from an automation"
-    /// use case that makes Run Command worth having at all. Whether
-    /// Keychain/Face ID access actually surfaces correctly with this set to
-    /// `false`, when the app isn't already foregrounded, is UNVERIFIED --
-    /// see CLAUDE.md's Apple Shortcuts section. `Keychain.load` fails fast
-    /// with `KeychainError.interactionNotAllowed` rather than hanging if the
-    /// OS can't show the prompt here, so the failure mode is at least
-    /// legible either way.
-    static let openAppWhenRun: Bool = false
+    /// `true`, confirmed necessary on a real device: with this `false`,
+    /// `Keychain.load`'s Face ID/Touch ID prompt can't be shown at all --
+    /// `SecItemCopyMatching` fails immediately with
+    /// `KeychainError.interactionNotAllowed`, even when the shortcut is run
+    /// by tapping it directly in the Shortcuts app, not just from an
+    /// unattended automation. See CLAUDE.md's Apple Shortcuts section for
+    /// the confirmed failure and why this sacrifices the "runs silently
+    /// from an automation" ideal to keep the feature usable at all.
+    static let openAppWhenRun: Bool = true
 
     @Parameter(title: "Host")
     var host: SSHHostEntity
