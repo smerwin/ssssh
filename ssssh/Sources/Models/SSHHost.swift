@@ -1,7 +1,10 @@
 import Foundation
 
 /// Named `SSHHost` (not `Host`) to avoid colliding with Foundation's `Host`.
-struct SSHHost: Identifiable, Codable, Hashable {
+/// Explicit `Sendable` since this now crosses into `AppIntents`/detached-task
+/// boundaries (see `RunCommandIntent`), not just implicit same-module
+/// inference.
+struct SSHHost: Identifiable, Codable, Hashable, Sendable {
     let id: UUID
     var nickname: String
     var hostname: String
