@@ -189,4 +189,51 @@ struct KeyImporterTests {
             try KeyImporter.importEd25519(fileContents: Data("not a key".utf8), passphrase: "", comment: "my-label")
         }
     }
+
+    // Hand-built rather than real ssh-keygen output: Citadel's `Cipher`
+    // enum only recognizes "none"/"aes128-ctr"/"aes256-ctr", so any other
+    // cipher name fails the moment it's parsed -- before KDF, key count, or
+    // key material are ever read. Only enough structure to satisfy
+    // `SSHKeyDetection.detectPrivateKeyType` (which needs to see through to
+    // the "ssh-ed25519" key type before decryption is even attempted) plus
+    // a cipher name is needed; everything after is unreachable.
+    private static func armoredKeyClaimingCipher(_ cipherName: String) -> String {
+        func sshString(_ string: String) -> [UInt8] {
+            let bytes = Array(string.utf8)
+            let length = UInt32(bytes.count)
+            return [UInt8(length >> 24), UInt8((length >> 16) & 0xFF), UInt8((length >> 8) & 0xFF), UInt8(length & 0xFF)] + bytes
+        }
+        func uint32BE(_ value: UInt32) -> [UInt8] {
+            [UInt8(value >> 24), UInt8((value >> 16) & 0xFF), UInt8((value >> 8) & 0xFF), UInt8(value & 0xFF)]
+        }
+
+        var bytes: [UInt8] = Array("openssh-key-v1".utf8) + [0x00]
+        bytes += sshString(cipherName)      // cipher name
+        bytes += sshString("none")          // KDF name
+        bytes += uint32BE(0)                // KDF options (empty)
+        bytes += uint32BE(1)                // number of keys
+        bytes += uint32BE(0)                // public key blob length (unused by detection)
+        bytes += sshString("ssh-ed25519")   // key type, inside the "public key blob"
+
+        let base64 = Data(bytes).base64EncodedString()
+        return "-----BEGIN OPENSSH PRIVATE KEY-----\n\(base64)\n-----END OPENSSH PRIVATE KEY-----"
+    }
+
+    // Regression test for a real report: the error used to say only "This
+    // key uses an encryption cipher ssssh doesn't support yet." with no way
+    // to tell which cipher without device console access -- Citadel's own
+    // error type never carries the actual offending name. See
+    // KeyImporter's `sniffCipherAndKDFNames`.
+    @Test func namesTheSpecificUnsupportedCipherWhenPossible() {
+        let armored = Self.armoredKeyClaimingCipher("aes256-cbc")
+        do {
+            _ = try KeyImporter.importEd25519(fileContents: Data(armored.utf8), passphrase: "", comment: "my-label")
+            Issue.record("expected importEd25519 to throw for an unsupported cipher")
+        } catch KeyImporter.ImportError.invalidKey(let message) {
+            #expect(message.contains("aes256-cbc"))
+            #expect(message.contains("aes256-ctr"))
+        } catch {
+            Issue.record("expected .invalidKey, got \(error)")
+        }
+    }
 }
