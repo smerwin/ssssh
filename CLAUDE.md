@@ -204,11 +204,15 @@ author's own checkout), here's what differs:
   every 20s) wasn't the documented "resend the same size, a no-op to any
   well-behaved shell" -- it was a genuine `WindowChangeRequest` resizing
   the remote PTY *back down to 80x24*, SIGWINCH and all. Reported as
-  "reattaching to a backgrounded session results in garbled input until I
-  rotate the device 90 degrees and back again": the far end had spent the
-  whole background window redrawing for a grid the on-screen terminal
-  wasn't using, and rotating was the only thing that made SwiftTerm
-  re-report the real size and resync it. Fixed by recording in `resize`,
+  "reattaching to a backgrounded session results in garbled output until I
+  rotate the device 90 degrees and back again" -- **output**, i.e. the
+  render path, not anything to do with keystrokes: nothing about this bug
+  touches what gets sent to the remote, so don't start a repeat
+  investigation in `MoshPredictionEngine` or `TerminalAccessoryView`'s
+  control-modifier bridging. The far end had spent the whole background
+  window redrawing for a grid the on-screen terminal wasn't using, and
+  rotating was the only thing that made SwiftTerm re-report the real size
+  and resync it. Fixed by recording in `resize`,
   **before** the delivery attempts rather than after a successful one --
   see the next entry for why that ordering is the load-bearing part.
 - **A resize with no live data path was silently dropped, and nothing ever
