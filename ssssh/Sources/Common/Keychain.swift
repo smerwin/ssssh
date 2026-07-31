@@ -11,6 +11,7 @@ enum Keychain {
         case unhandled(OSStatus)
         case itemNotFound
         case authenticationCanceled
+        case interactionNotAllowed
 
         var errorDescription: String? {
             switch self {
@@ -20,6 +21,8 @@ enum Keychain {
                 return "The key's private material could not be found in the Keychain."
             case .authenticationCanceled:
                 return "Authentication was canceled."
+            case .interactionNotAllowed:
+                return "Couldn't show a Face ID/Touch ID prompt in this context. Open ssssh in the foreground once, then try again."
             }
         }
     }
@@ -66,6 +69,7 @@ enum Keychain {
         guard status == errSecSuccess, let data = result as? Data else {
             if status == errSecItemNotFound { throw KeychainError.itemNotFound }
             if status == errSecUserCanceled { throw KeychainError.authenticationCanceled }
+            if status == errSecInteractionNotAllowed { throw KeychainError.interactionNotAllowed }
             throw KeychainError.unhandled(status)
         }
         return data

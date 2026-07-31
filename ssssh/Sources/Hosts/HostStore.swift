@@ -14,6 +14,10 @@ final class HostStore {
         hosts = fileStore.load(default: [])
     }
 
+    func host(id: UUID) -> SSHHost? {
+        hosts.first { $0.id == id }
+    }
+
     func add(_ host: SSHHost) throws {
         hosts.append(host)
         try save()

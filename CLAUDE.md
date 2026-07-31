@@ -332,79 +332,156 @@ here's the actual constraint, for whoever picks this up next:
   between those two, not by looking for a third way around Citadel --
   there wasn't one as of Citadel 0.7.x.
 
-## Apple Shortcuts support (not started -- investigation notes)
+## Apple Shortcuts support ("Run Command" implemented; `openAppWhenRun = true` after a confirmed on-device Face ID failure)
 
-Nobody has written any code for this yet. This is a scoping writeup from
-a planning conversation, kept here so a future session doesn't have to
-re-derive it -- treat it as a starting point, not a finished design.
+The **App Intents** framework, declared directly in the `ssssh` app
+target -- no separate extension target needed, since `deploymentTarget.iOS`
+is already `17.0` in `project.yml`. `import AppIntents` needs no
+`dependencies:`/`sdk:` entry in `project.yml`, matching how
+`LocalAuthentication`/`Security` (used directly in `Keychain.swift`)
+aren't listed either -- first-party system frameworks are implicitly
+linked.
 
-The mechanism is the **App Intents** framework. It doesn't need a
-separate extension target -- `deploymentTarget.iOS` is already `17.0` in
-`project.yml`, and App Intents can be declared directly in the `ssssh`
-app target, exposed to Shortcuts/Siri via an `AppShortcutsProvider`.
+### What's implemented
 
-### What would need to be built
+**"Run Command"** -- host + command string in, output text out, scoped
+deliberately to this one intent (see "Recommended scope" below for why
+"Connect"/open-terminal is still a separate, unbuilt second pass):
 
-1. An `AppEntity` wrapping `SSHHost` (`Sources/Models/SSHHost.swift`),
-   with an `EntityQuery` backed by `HostStore`
-   (`Sources/Hosts/HostStore.swift`), so a Shortcut can pick "Connect to
-   `<nickname>`" from a parameter picker instead of typing a hostname.
-2. A **"Run Command"** `AppIntent`: host + command string in, output
-   text out. This should reuse the existing one-shot Citadel pattern
-   from `SSHCopyID.swift` and `MoshBootstrap.swift`
-   (`SSHClient.connect(...)` -> `executeCommand`/`executeCommandStream`),
-   *not* the full `SSHConnection` state machine -- there's no live
-   terminal UI involved, just connect, run one command, capture output,
-   disconnect. This is the intent that's actually useful for Shortcuts:
-   piping output into notifications, other automations, etc.
-3. A **"Connect"** `AppIntent` that opens the app and calls
-   `SessionManager.session(for:)` (`Sources/SSH/SessionManager.swift`)
-   for a given host -- a Shortcuts-triggerable deep link into a live
-   terminal. This one has to run in the foreground
-   (`openAppWhenRun = true`) since it's opening an interactive session,
-   not returning a value.
-4. An `AppShortcutsProvider` with phrases ("Run <command> on <host> in
-   ssssh") so these surface in the Shortcuts app and Siri without the
-   user having to build anything by hand first.
+- `Sources/Shortcuts/SSHHostEntity.swift`: `SSHHostEntity: AppEntity`
+  wraps the whole `SSHHost` (not just a subset of fields), backed by
+  `SSHHostEntityQuery: EntityQuery` reading from a fresh `HostStore()`
+  instance. Wrapping the whole host means `keyID`/`port`/`username` are
+  available to the intent with no second lookup, and this entity/query
+  pair is already reusable by a future "Connect" intent without further
+  scaffolding.
+- `Sources/Shortcuts/RunCommandPreflight.swift`: `RunCommandPreflight
+  .validate(host:trustedFingerprint:)` is the one piece of this feature
+  that's actually unit-tested (`RunCommandPreflightTests.swift`) --
+  everything else needs a live SSH server and/or real biometrics/App
+  Intents runtime to exercise, the same gap `SSHCopyID` (untested for the
+  same reason) already lives with.
+- `Sources/Shortcuts/RunCommandIntent.swift`: `RunCommandIntent:
+  AppIntent`, `@MainActor func perform()`. Mirrors
+  `SSHConnection.connect(keyStore:hostKeyStore:)`'s own actor-isolation
+  split exactly: resolves `SSHPrivateKeyMaterial` via
+  `KeyStore.privateKeyMaterial(for:reason:)` on the main actor (this is
+  where Face ID/Keychain access actually happens), then hands off to a
+  `Task.detached` for the actual Citadel connection -- Citadel's types
+  aren't Sendable-audited, same reasoning as every other one-shot flow in
+  this codebase.
+- `Sources/SSH/RunCommandExecutor.swift`: the actual one-shot Citadel
+  flow, sibling to `SSHCopyID.swift` rather than living under
+  `Shortcuts/` (it has no `AppIntents` dependency and is reusable
+  independent of the intent glue). Uses `executeCommandStream`, not
+  `executeCommand`, for the same reason `MoshBootstrap.run` does:
+  `Citadel.SSHClient.CommandFailed` only carries an exit code, and the
+  whole point of Run Command is returning the command's actual output
+  even when it exits non-zero.
+- `Sources/Shortcuts/ShortcutsProvider.swift`: `sssshShortcuts:
+  AppShortcutsProvider`. **A real, non-obvious App Intents constraint
+  found here, confirmed by the `appintentsmetadataprocessor` build
+  step**: a phrase can reference at most **one** parameter ("Multiple
+  parameters detected in phrase" is a hard build error, not a warning),
+  and that parameter must be `AppEntity`/`AppEnum`-typed ("Invalid
+  parameter type" for a plain `String`) -- so `command` (a `String`)
+  can't appear in a phrase at all, only `host` can. If you're tempted to
+  write a phrase naming both parameters, or to put the command text in a
+  phrase, expect the build to fail at the metadata-export step, not at
+  runtime.
+- Small additions to existing files: `SSHHost` now explicitly conforms to
+  `Sendable` (required to cross into `AppIntents`/detached-task
+  boundaries); `HostStore.host(id:)` and `KeyStore.key(id:)` lookup
+  helpers (previously each store only exposed its full array);
+  `Keychain.KeychainError.interactionNotAllowed`, mapped from
+  `errSecInteractionNotAllowed`, so a Keychain call that can't show UI in
+  whatever context it's running fails with a specific, actionable error
+  rather than the generic `unhandled(OSStatus)` case.
+
+**Fresh instances, not a singleton.** `RunCommandIntent.perform()`
+constructs its own `HostStore`/`KeyStore`/`HostKeyStore` instances rather
+than reaching for shared state -- there's no existing singleton pattern
+for these in this codebase to extend, and each store's `init` does
+nothing but load its JSON file (or, for `KeyStore`, nothing extra at all;
+Keychain material is fetched lazily per-key) fully into memory, so a
+fresh instance sees the same on-disk state the live app's own instances
+would. The only race this introduces (two writers overlapping) already
+exists without Shortcuts involved, since every store's save is a plain
+last-writer-wins atomic file write.
 
 ### Open questions / friction points specific to this codebase
 
-- **Face ID/Keychain gating.** Private key material lives behind
-  `KeyStore` (`Sources/Keys/KeyStore.swift`), which is Face ID-gated.
-  A "Run Command" intent triggered from an unattended automation (not
-  tapped by the user in the moment) will hit that biometric prompt
-  out-of-process -- **untested** whether `LAContext` auth actually
-  surfaces correctly from an App Intent's `perform()` when the app isn't
-  foregrounded, or whether "Run Command" also needs
-  `openAppWhenRun = true` after all, which would defeat the "runs
-  silently from an automation" use case that makes it worth building.
-  Verify this early -- it's the one finding here that could change the
-  whole design, not just an implementation detail.
-- **Actor isolation.** `SSHConnection`/`SessionManager` are `@MainActor`
-  (see "Concurrency architecture" above), but "Run Command" doesn't want
-  that machinery at all -- it should talk to Citadel directly the way
-  `SSHCopyID` does, off the main actor, same as those existing one-shot
-  callers.
-- **Host-key trust.** `HostKeyStore` (`Sources/Hosts/HostKeyStore.swift`
-  per the concurrency-architecture section above) currently confirms
-  unrecognized hosts via a UI sheet
-  (`HostKeyConfirmationView`/`sssshApp.swift`). A background "Run
-  Command" intent hitting a host with no stored, trusted key has nowhere
-  to show that sheet -- it should fail with a clear error ("connect from
-  the app once first to trust this host's key") rather than trying to
-  present UI out of context, and definitely should not silently
-  auto-trust.
+- **Face ID/Keychain gating -- confirmed broken with `openAppWhenRun =
+  false`, fixed by switching to `true`.** Tested on a real device: running
+  the shortcut by tapping "Run Command" directly in the Shortcuts app
+  (not even an unattended automation -- the easiest, most favorable case)
+  immediately hit `KeychainError.interactionNotAllowed`
+  ("Couldn't show a Face ID/Touch ID prompt in this context"). So the
+  `SecItemCopyMatching`/`kSecUseAuthenticationContext` call genuinely
+  cannot show interactive biometric UI when an App Intent runs with
+  `openAppWhenRun == false`, confirming the worst-case guess this section
+  used to only flag as a risk. `RunCommandIntent.openAppWhenRun` is now
+  `true`: the app opens to the foreground before `perform()` runs, which
+  guarantees Face ID can prompt (confirmed the fast-fail path -- not yet
+  independently re-confirmed that the happy path with `true` prompts and
+  succeeds end-to-end on device, though there's no reason to expect
+  otherwise once the app is genuinely foregrounded the same way a normal
+  connect from the app's own UI already works). This sacrifices the
+  "runs silently from an unattended automation" ideal that motivated
+  `false` in the first place -- the app will visibly open every time this
+  runs -- but that's the real tradeoff now, not a hypothetical one.
+  `KeychainError.interactionNotAllowed` stays in place regardless, since
+  it's a legible failure mode for any future path that tries background
+  execution again (e.g. if Face ID is ever swapped for something that can
+  authenticate without UI).
+- **Host-key trust -- resolved, not just flagged.** `HostKeyStore
+  .evaluate` (see "Concurrency architecture" above) waits indefinitely on
+  a `CheckedContinuation` for an unrecognized host, resolved only by the
+  confirmation sheet in `sssshApp.swift`'s `WindowGroup` -- with no
+  window ever presented (background `openAppWhenRun == false`
+  invocation), that wait never resolves; this is a confirmed hang, not
+  speculative. `RunCommandPreflight.validate` runs *before* any
+  connection is attempted and requires `HostKeyStore.fingerprint(for:)`
+  to already be non-`nil` (i.e. the user has connected once from the app
+  itself and trusted the host already), failing immediately with an
+  actionable error ("open ssssh and connect ... once first") otherwise.
+  `RunCommandExecutor` still routes through the normal
+  `SSHHostKeyValidator.tofu` validator regardless (rather than a special
+  bypass), which is safe specifically because preflight has already
+  guaranteed the already-trusted fast path in `evaluate` is what
+  actually runs -- a fingerprint mismatch at that point throws
+  `HostKeyMismatch` (a real, surfaced error), not a hang.
+- **Actor isolation -- resolved.** `RunCommandIntent.perform()` mirrors
+  `SSHConnection.connect`'s exact split: `@MainActor` for the
+  synchronous Keychain/Face ID call, `Task.detached` for the Citadel
+  network flow.
+- **No key configured.** A password-only host (`SSHHost.keyID == nil`)
+  can't be used with Run Command at all -- there's no way to prompt for
+  a password from an unattended Shortcuts run -- and
+  `RunCommandPreflight` fails with a clear, specific error for this case
+  distinct from the untrusted-host-key case.
 
 ### Recommended scope for a first pass
 
-Build **"Run Command" only** first. It reuses existing one-shot
-connection code, doesn't touch the live-terminal UI at all, and is the
-actual Shortcuts use case people ask for ("turn off my server", "check
-disk space", piped into a notification). Add "Connect"/open-terminal as
-a separate second pass once "Run Command" is proven out end-to-end
-(especially the Face ID question above) -- building both, plus
-host-key/Face ID handling, in one pass is more scope than a first PR
-here should take on.
+Scoped to **"Run Command" only**, as recommended -- it reuses existing
+one-shot connection code, doesn't touch the live-terminal UI at all, and
+is the actual Shortcuts use case people ask for ("turn off my server",
+"check disk space", piped into a notification). "Connect"/open-terminal
+(a Shortcuts-triggerable deep link into a live terminal via
+`SessionManager.session(for:)`, needing `openAppWhenRun = true` since
+it's opening an interactive session rather than returning a value)
+remains a deliberately separate, unbuilt second pass -- start it only
+once Run Command is proven out end-to-end on a real device, especially
+the Face ID question above.
+
+### Still open
+
+- Re-confirming on a real device that `openAppWhenRun = true` actually
+  fixes the Face ID prompt end-to-end (app opens, prompt appears,
+  command runs, output returns to Shortcuts) -- only the failure with
+  `false` has been directly observed on-device so far, not the full
+  happy path with `true`.
+- The "Connect" intent (second pass, out of scope here).
 
 ## Concurrency architecture (why the SSH code looks the way it does)
 
