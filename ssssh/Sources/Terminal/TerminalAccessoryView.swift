@@ -38,6 +38,18 @@ final class TerminalAccessoryView: UIInputView {
         super.init(frame: CGRect(x: 0, y: 0, width: width, height: barHeight), inputViewStyle: .keyboard)
         self.terminalView = terminalView
         allowsSelfSizing = true
+        // `width` above is only a starting guess: one `TerminalAccessoryView`
+        // is built per `TerminalSessionController` and lives as long as the
+        // session does, so the screen width read at that moment is whatever
+        // orientation the session happened to be opened in and never
+        // changes again on its own. Without `.flexibleWidth` the bar keeps
+        // that stale width after a rotation -- visibly so in landscape,
+        // where a portrait-width bar leaves its buttons bunched up and
+        // clipped against one edge instead of spanning the keyboard. With
+        // it, UIKit resizes the bar to the keyboard's width, and
+        // `TerminalAccessory` re-lays out its own buttons to match (see its
+        // `bounds` didSet).
+        autoresizingMask = .flexibleWidth
 
         let builtIn = TerminalAccessory(frame: CGRect(x: 0, y: 0, width: width, height: barHeight),
                                         inputViewStyle: .keyboard, container: terminalView)

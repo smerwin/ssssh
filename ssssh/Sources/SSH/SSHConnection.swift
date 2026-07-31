@@ -450,22 +450,32 @@ final class SSHConnection: Identifiable, Hashable, @unchecked Sendable {
                 }
             }
 
+            // Ask for the size the terminal view is *actually* showing
+            // rather than the 80x24 placeholder, whenever it's already
+            // known. On a reconnect under an on-screen terminal this is the
+            // only chance to get it right up front: SwiftTerm won't
+            // re-report a size that hasn't changed, so a PTY opened at the
+            // placeholder size would stay there (`reassertTerminalSize()`
+            // below covers the remaining window, but starting correct means
+            // the login banner and shell prompt are laid out right in the
+            // first place, with no visible resize reflow).
+            let requestedSize = await MainActor.run { self.lastKnownSize }
             let ptyRequest = SSHChannelRequestEvent.PseudoTerminalRequest(
                 wantReply: true,
                 term: "xterm-256color",
-                terminalCharacterWidth: Self.defaultTerminalSize.cols,
-                terminalRowHeight: Self.defaultTerminalSize.rows,
+                terminalCharacterWidth: requestedSize.cols,
+                terminalRowHeight: requestedSize.rows,
                 terminalPixelWidth: 0,
                 terminalPixelHeight: 0,
                 terminalModes: SSHTerminalModes([:])
             )
             switch upgradeMode {
             case .mosh:
-                await emitDiagnostic("debug1: Requesting pty (xterm-256color, \(Self.defaultTerminalSize.cols)x\(Self.defaultTerminalSize.rows)) alongside the Mosh attempt.")
+                await emitDiagnostic("debug1: Requesting pty (xterm-256color, \(requestedSize.cols)x\(requestedSize.rows)) alongside the Mosh attempt.")
             case .et:
-                await emitDiagnostic("debug1: Requesting pty (xterm-256color, \(Self.defaultTerminalSize.cols)x\(Self.defaultTerminalSize.rows)) alongside the Eternal Terminal attempt.")
+                await emitDiagnostic("debug1: Requesting pty (xterm-256color, \(requestedSize.cols)x\(requestedSize.rows)) alongside the Eternal Terminal attempt.")
             case nil:
-                await emitDiagnostic("debug1: Requesting pty (xterm-256color, \(Self.defaultTerminalSize.cols)x\(Self.defaultTerminalSize.rows)).")
+                await emitDiagnostic("debug1: Requesting pty (xterm-256color, \(requestedSize.cols)x\(requestedSize.rows)).")
             }
 
             do {
@@ -517,6 +527,13 @@ final class SSHConnection: Identifiable, Hashable, @unchecked Sendable {
                         guard !hasCommittedToSSH else { return }
                         hasCommittedToSSH = true
                         network.writer = outbound
+                        // Covers a resize that landed between the PTY
+                        // request above and this writer existing -- until
+                        // now `resize` had nowhere to deliver it and simply
+                        // dropped it. Sent before the startup command so
+                        // whatever that launches already sees the right
+                        // geometry.
+                        await MainActor.run { self.reassertTerminalSize() }
                         if let startupCommand = host.startupCommand, !startupCommand.isEmpty {
                             try? await outbound.write(ByteBuffer(string: startupCommand + "\n"))
                         }
@@ -764,6 +781,14 @@ final class SSHConnection: Identifiable, Hashable, @unchecked Sendable {
         handoff.upgradeWon = true
 
         network.moshTransport = transport
+        // `mosh-server` was bootstrapped over a non-interactive SSH exec
+        // with no PTY of its own, so it starts at its own default geometry
+        // and has never been told this terminal's -- and SwiftTerm won't
+        // volunteer it again, since the on-screen terminal's size didn't
+        // change just because the session upgraded underneath it. Without
+        // this the whole Mosh session renders for the wrong grid until the
+        // user rotates the device.
+        await MainActor.run { self.reassertTerminalSize() }
         network.client = nil
         try? await client.close()
         return true
@@ -857,6 +882,13 @@ final class SSHConnection: Identifiable, Hashable, @unchecked Sendable {
         handoff.upgradeWon = true
 
         network.etTransport = transport
+        // Same reasoning as `attemptMoshUpgrade`'s identical call: the
+        // `etterminal` bootstrap ran over a non-interactive SSH exec, so
+        // `etserver`'s PTY has never heard this terminal's size, and
+        // SwiftTerm has no reason to re-report it just because the session
+        // upgraded. Sends a `TerminalInfo` packet now that the transport is
+        // the live data path.
+        await MainActor.run { self.reassertTerminalSize() }
         network.client = nil
         try? await client.close()
         return true
@@ -876,14 +908,33 @@ final class SSHConnection: Identifiable, Hashable, @unchecked Sendable {
         Task { try? await writer.write(buffer) }
     }
 
-    /// Last size this connection told the remote PTY about, defaulting to
-    /// the size requested at connect time (see `ptyRequest` in
-    /// `runSession`). Used by `sendKeepalive()` to re-send a size the
-    /// terminal view may never have actually changed.
-    private var lastKnownSize: (cols: Int, rows: Int) = SSHConnection.defaultTerminalSize
+    /// The size the terminal view last reported, whether or not there was
+    /// anywhere to deliver it at the time. Starts at the size the PTY is
+    /// requested with (see `ptyRequest` in `runSession`) so a session that
+    /// drops before its terminal view ever attaches still matches what the
+    /// remote shell was actually told.
+    ///
+    /// **This is the terminal's size, not "the last size successfully sent"**
+    /// -- `resize(cols:rows:)` records it unconditionally, *before* trying
+    /// to deliver it. That distinction is the whole point: a resize that
+    /// arrives while there's no live data path yet (very common -- SwiftTerm
+    /// reports its real size as soon as it's laid out, typically well
+    /// before the SSH handshake finishes, and Mosh/Eternal Terminal
+    /// transports don't exist until their upgrade commits) is otherwise
+    /// silently dropped on the floor, leaving the remote stuck at
+    /// `defaultTerminalSize` with no one left to tell it otherwise. Every
+    /// path that brings a data channel up calls `reassertTerminalSize()`
+    /// once it's live to close that gap.
+    ///
+    /// `private(set)` rather than `private` only so tests can read it back.
+    private(set) var lastKnownSize: (cols: Int, rows: Int) = SSHConnection.defaultTerminalSize
 
     func resize(cols: Int, rows: Int) {
         guard cols > 0, rows > 0 else { return }
+        // Recorded before the delivery attempts below, not after a
+        // successful one -- see `lastKnownSize`'s doc comment for why the
+        // undeliverable case is exactly the one that matters.
+        lastKnownSize = (cols: cols, rows: rows)
         if let transport = network.moshTransport {
             transport.resize(cols: cols, rows: rows)
             return
@@ -896,6 +947,25 @@ final class SSHConnection: Identifiable, Hashable, @unchecked Sendable {
         Task { try? await writer.changeSize(cols: cols, rows: rows, pixelWidth: 0, pixelHeight: 0) }
     }
 
+    /// Re-sends `lastKnownSize` over whatever data path is live now.
+    ///
+    /// Called at each point a session's data channel becomes usable (plain
+    /// SSH's PTY in `runSession`, and each transport's commit in
+    /// `attemptMoshUpgrade`/`attemptETUpgrade`), because none of those
+    /// three inherently learn the terminal's real size on their own:
+    /// SwiftTerm only calls `TerminalViewDelegate.sizeChanged` when the
+    /// computed cols/rows actually *change*, so a reconnect or an upgrade
+    /// under an on-screen terminal whose geometry never moved gets no
+    /// second notification -- the remote just stays at whatever it was
+    /// first told. Symptom when this is missed: output rendered for the
+    /// wrong grid, so lines overwrite each other and absolute cursor
+    /// positioning lands in the wrong cells, until something forces a
+    /// genuine geometry change (rotating the device and back) and SwiftTerm
+    /// finally re-reports.
+    func reassertTerminalSize() {
+        resize(cols: lastKnownSize.cols, rows: lastKnownSize.rows)
+    }
+
     /// Re-sends the last known terminal size as a harmless keepalive.
     /// `SessionManager` calls this on a timer while the app is
     /// backgrounded so an idle-timing-out NAT or firewall along the way
@@ -904,8 +974,18 @@ final class SSHConnection: Identifiable, Hashable, @unchecked Sendable {
     /// `SessionManager.applicationDidEnterBackground()`. Resending the
     /// *same* size is a genuine wire message (a `WindowChangeRequest`) but
     /// a no-op to any well-behaved shell, since the size hasn't changed.
+    ///
+    /// That "no-op" property depends entirely on `lastKnownSize` genuinely
+    /// tracking the terminal: it used to be assigned exactly once (its
+    /// `defaultTerminalSize` initial value) and never updated, so every
+    /// keepalive fired a real `WindowChangeRequest` resizing the remote PTY
+    /// back down to 80x24 -- 20 seconds after backgrounding, whatever was
+    /// running on the far end got a SIGWINCH and started redrawing for a
+    /// grid the on-screen terminal wasn't using. Coming back to the app
+    /// then showed garbled output that only cleared once the device was
+    /// rotated (forcing SwiftTerm to re-report the real size).
     func sendKeepalive() {
-        resize(cols: lastKnownSize.cols, rows: lastKnownSize.rows)
+        reassertTerminalSize()
     }
 
     func disconnect() {
