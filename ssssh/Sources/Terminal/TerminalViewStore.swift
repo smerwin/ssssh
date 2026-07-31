@@ -75,6 +75,30 @@ final class TerminalSessionController: NSObject, TerminalViewDelegate {
         view.pageDown()
     }
 
+    /// Asks UIKit to re-measure the input accessory bar and re-publish the
+    /// keyboard's frame, without disturbing the keyboard itself.
+    ///
+    /// Called when this session comes back on screen -- from the background
+    /// (`TerminalSessionView`'s `scenePhase` handler) or from another
+    /// screen (`TerminalContainerView.didMoveToWindow`). Returning with the
+    /// keyboard already up doesn't reliably re-publish its geometry, and
+    /// SwiftUI's keyboard-avoidance inset is driven entirely by those
+    /// notifications: if none arrives, the terminal is laid out as though
+    /// there were no keyboard and no accessory bar beneath it, so its
+    /// bottom rows sit underneath both. That's the state the user was
+    /// having to clear by hand by hiding and re-showing the keyboard with
+    /// the toolbar button -- which works only because dismissing and
+    /// presenting the keyboard is itself what forces the geometry to be
+    /// republished. This does the same thing without the round trip
+    /// through an empty screen.
+    ///
+    /// A no-op when the terminal isn't first responder: with no keyboard on
+    /// screen there's no stale inset to correct.
+    @MainActor func refreshKeyboardLayout() {
+        guard view.isFirstResponder else { return }
+        view.reloadInputViews()
+    }
+
     /// Toolbar button for showing/hiding the keyboard -- the swipe
     /// gestures above no longer do this (repurposed for scrollback
     /// paging now that this button covers it), and it's the only way to
@@ -157,6 +181,10 @@ final class TerminalViewStore {
 
     func toggleKeyboard(for connection: SSHConnection) {
         controller(for: connection).toggleKeyboard()
+    }
+
+    func refreshKeyboardLayout(for connection: SSHConnection) {
+        controller(for: connection).refreshKeyboardLayout()
     }
 
     /// Drops controllers for sessions `SessionManager` no longer knows about, so a

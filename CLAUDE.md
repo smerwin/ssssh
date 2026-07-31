@@ -196,6 +196,100 @@ author's own checkout), here's what differs:
   in-memory `keys` array + `keys.json`) *before* the corresponding
   Keychain mutation, not after -- see the doc comments on both methods for
   why that ordering, not the reverse, is the safe one.
+- **`SSHConnection.lastKnownSize` was never assigned** -- declared, given
+  its `defaultTerminalSize` (80x24) initial value, read by
+  `sendKeepalive()`, and written by nothing. `resize(cols:rows:)` sent the
+  terminal's real size straight to the wire without recording it. So the
+  background keepalive (`SessionManager.applicationDidEnterBackground()`,
+  every 20s) wasn't the documented "resend the same size, a no-op to any
+  well-behaved shell" -- it was a genuine `WindowChangeRequest` resizing
+  the remote PTY *back down to 80x24*, SIGWINCH and all. Reported as
+  "reattaching to a backgrounded session results in garbled output until I
+  rotate the device 90 degrees and back again" -- **output**, i.e. the
+  render path, not anything to do with keystrokes: nothing about this bug
+  touches what gets sent to the remote, so don't start a repeat
+  investigation in `MoshPredictionEngine` or `TerminalAccessoryView`'s
+  control-modifier bridging. The far end had spent the whole background
+  window redrawing for a grid the on-screen terminal wasn't using, and
+  rotating was the only thing that made SwiftTerm re-report the real size
+  and resync it. Fixed by recording in `resize`,
+  **before** the delivery attempts rather than after a successful one --
+  see the next entry for why that ordering is the load-bearing part.
+- **A resize with no live data path was silently dropped, and nothing ever
+  re-sent it.** Same family as the above, three more ways in. SwiftTerm
+  only calls `TerminalViewDelegate.sizeChanged` when the computed
+  cols/rows actually *change* (`processSizeChange`), so there is exactly
+  one notification per genuine geometry change and no way to ask for a
+  repeat. If `SSHConnection.resize` had nowhere to deliver that one
+  notification, the size was lost for good: (1) the terminal view reports
+  its size as soon as it's laid out, typically well before the SSH
+  handshake finishes, so `network.writer` is usually still `nil` for the
+  *first* resize of a session; (2) an auto-reconnect opens a fresh PTY at
+  `defaultTerminalSize` under a terminal whose geometry never moved, so no
+  new `sizeChanged` ever comes; (3) `attemptMoshUpgrade`/`attemptETUpgrade`
+  bootstrap `mosh-server`/`etterminal` over a non-interactive SSH exec with
+  no PTY of its own, and neither transport is told a size at construction
+  -- an upgraded session ran at whatever the remote defaulted to. All three
+  produce the same symptom as the entry above (output rendered for the
+  wrong grid; rotate to fix). Fixed with `reassertTerminalSize()`, called
+  at each point a data channel actually becomes usable: after
+  `network.writer` is set in `commitToSSH`, and after each transport is
+  installed in the two upgrade paths. `runSession` also now requests the
+  PTY at `lastKnownSize` instead of the 80x24 placeholder, so a reconnect
+  starts correct rather than being corrected a moment later. If you ever
+  make `lastKnownSize` record only successfully-*sent* sizes, every one of
+  these comes back -- the undeliverable case is the entire point.
+- **Returning the same long-lived `UIView` from `makeUIView` more than
+  once.** `TerminalHostView` used to hand SwiftUI the store's persistent
+  `SwiftTerm.TerminalView` directly. Pushing the session a second time (or
+  pushing it from the Sessions tab after first opening it from Hosts)
+  re-parents that view from one SwiftUI-managed container into another;
+  UIKit drops the constraints tying it to the old superview on the way
+  out, and the new representable container has none of its own for it, so
+  it keeps whatever frame it had -- generally taller than the space
+  actually available now, leaving the bottom rows of the terminal behind
+  the keyboard accessory bar or the tab bar until a rotation or a keyboard
+  toggle forced a full re-layout. Reported alongside the resize bugs above
+  ("the keyboard extended widget overlaps some content until I tap the
+  disappear/reappear keyboard"). Fixed by returning a fresh, disposable
+  `TerminalContainerView` per instantiation that adopts the persistent
+  terminal and sets its `frame` in `layoutSubviews` -- deliberately plain
+  frame assignment rather than constraints, since the terminal is a
+  `UIScrollView` that gets re-parented repeatedly and frames leave nothing
+  behind on the way out. Don't "simplify" this back into returning the
+  terminal itself.
+- **`UIScreen.main.bounds.width` captured once, in a view that outlives
+  every rotation.** `TerminalAccessoryView`'s initial frame width was read
+  at `TerminalSessionController` init and never updated, so the accessory
+  bar kept whatever orientation's width the session was *opened* in --
+  visibly wrong in landscape (buttons bunched and clipped against one edge
+  instead of spanning the keyboard, see the reporter's landscape
+  screenshot). Fixed with `autoresizingMask = .flexibleWidth`;
+  `TerminalAccessory` re-lays out its own buttons to whatever width it's
+  given (its `bounds` didSet), so tracking the keyboard's width is enough.
+- **Stale SwiftUI keyboard-avoidance inset on re-entry (fix is reasoned,
+  not device-verified -- read before assuming it works).** The same report
+  above also covers the app-returns-from-*background* case, which the
+  re-parenting fix can't reach: nothing moves in the view hierarchy, so
+  there's no `didMoveToWindow` and no new container. The theory is that
+  coming back with the keyboard already up doesn't reliably re-publish the
+  keyboard's frame, and SwiftUI's keyboard-avoidance inset is driven
+  entirely by those notifications -- if none arrives, the terminal is laid
+  out as if there were no keyboard and no accessory bar beneath it. That
+  matches the reporter's own workaround exactly (hiding and re-showing the
+  keyboard is what forces the geometry to be republished).
+  `TerminalSessionController.refreshKeyboardLayout()` calls
+  `reloadInputViews()` to do the same thing without the round trip, driven
+  off `scenePhase` becoming `.active` in `TerminalSessionView` and off
+  `TerminalContainerView.didMoveToWindow` for the navigation case. **This
+  one is a hypothesis, unlike the four above** -- it was reasoned from the
+  reported symptom and the reporter's workaround, not reproduced in a
+  debugger, and this environment has no tap-driven iOS Simulator
+  automation (same gap CLAUDE.md's Eternal Terminal "UI integration"
+  section already documents). If the overlap survives these changes, the
+  keyboard inset is the thing to instrument first -- log the keyboard
+  notifications and the resolved bottom safe-area inset across a
+  background/foreground cycle before reaching for a different theory.
 
 ## Importing RSA/ECDSA private keys (not implemented -- here's why)
 
