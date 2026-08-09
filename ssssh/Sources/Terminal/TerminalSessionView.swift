@@ -17,17 +17,10 @@ struct TerminalSessionView: View {
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @Environment(\.scenePhase) private var scenePhase
 
-    private var selectedTheme: TerminalTheme {
-        TerminalTheme(rawValue: themeRawValue) ?? .crtGreen
-    }
-
-    /// The theme actually rendered. Forces High Contrast whenever iOS's own
-    /// Settings > Accessibility > Increase Contrast is on, regardless of the
-    /// user's manual picker choice in Settings -- someone who's already told
-    /// the system "I need more contrast everywhere" shouldn't have to
-    /// separately discover a second, app-specific setting to get it here.
+    /// The theme actually rendered -- see `TerminalTheme.resolved` for why
+    /// increased contrast overrides the picker choice.
     private var theme: TerminalTheme {
-        colorSchemeContrast == .increased ? .highContrast : selectedTheme
+        TerminalTheme.resolved(rawValue: themeRawValue, increasedContrast: colorSchemeContrast == .increased)
     }
 
     /// Also follows Reduce Transparency, independent of theme -- the
@@ -164,14 +157,15 @@ private struct StatusBanner<Content: View>: View {
 private struct TerminalHostView: UIViewRepresentable {
     let connection: SSHConnection
     let theme: TerminalTheme
+    @AppStorage(AppSettingsKeys.terminalFontSize) private var baseFontSize = TerminalFontSize.standard
     @Environment(TerminalViewStore.self) private var terminalViewStore
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     func makeUIView(context: Context) -> TerminalContainerView {
-        let view = terminalViewStore.controller(for: connection).view
-        applyTheme(to: view)
-        applyFont(to: view)
-        return TerminalContainerView(terminalView: view)
+        let controller = terminalViewStore.controller(for: connection)
+        applyTheme(to: controller.view)
+        applyFont(with: controller)
+        return TerminalContainerView(terminalView: controller.view)
     }
 
     func updateUIView(_ uiView: TerminalContainerView, context: Context) {
@@ -180,9 +174,10 @@ private struct TerminalHostView: UIViewRepresentable {
         // (a push animating in while the previous screen animates out), and
         // whichever adopted the terminal last wins. Without this the one
         // left holding an empty container would stay empty.
-        uiView.adopt(terminalViewStore.controller(for: connection).view)
+        let controller = terminalViewStore.controller(for: connection)
+        uiView.adopt(controller.view)
         applyTheme(to: uiView.terminalView)
-        applyFont(to: uiView.terminalView)
+        applyFont(with: controller)
     }
 
     private func applyTheme(to view: SwiftTerm.TerminalView) {
@@ -190,16 +185,13 @@ private struct TerminalHostView: UIViewRepresentable {
         view.nativeForegroundColor = UIColor(theme.foreground)
     }
 
-    /// SwiftTerm's own default font never responds to the system text-size
-    /// setting -- it has no Dynamic Type awareness of its own. Scale it
-    /// with the same `UIFontMetrics` mechanism the semantic SwiftUI text
-    /// styles used elsewhere in the app rely on, so bumping the system text
-    /// size (including "Larger Accessibility Sizes") reaches the terminal
-    /// too, not just every other screen.
-    private func applyFont(to view: SwiftTerm.TerminalView) {
-        let baseFont = UIFont.monospacedSystemFont(ofSize: 14, weight: .regular)
-        let traits = UITraitCollection(preferredContentSizeCategory: dynamicTypeSize.uiContentSizeCategory)
-        view.font = UIFontMetrics(forTextStyle: .body).scaledFont(for: baseFont, compatibleWith: traits)
+    /// Pushes the user's chosen base text size, plus the current system text
+    /// size, down to the terminal. The controller owns the actual `font`
+    /// assignment because pinch-to-zoom lives there too and the two have to
+    /// agree about the size currently on screen -- see
+    /// `TerminalSessionController.applyFont(baseSize:contentSizeCategory:)`.
+    private func applyFont(with controller: TerminalSessionController) {
+        controller.applyFont(baseSize: baseFontSize, contentSizeCategory: dynamicTypeSize.uiContentSizeCategory)
     }
 }
 
@@ -273,30 +265,6 @@ final class TerminalContainerView: UIView {
         Task { @MainActor [weak terminal] in
             guard let terminal, terminal.isFirstResponder else { return }
             terminal.reloadInputViews()
-        }
-    }
-}
-
-private extension DynamicTypeSize {
-    /// Maps SwiftUI's `DynamicTypeSize` to the `UIContentSizeCategory`
-    /// `UIFontMetrics` expects, so scaling is driven by the environment
-    /// value SwiftUI already tracks rather than depending on this plain
-    /// `UIView`'s own trait-collection propagation timing.
-    var uiContentSizeCategory: UIContentSizeCategory {
-        switch self {
-        case .xSmall: return .extraSmall
-        case .small: return .small
-        case .medium: return .medium
-        case .large: return .large
-        case .xLarge: return .extraLarge
-        case .xxLarge: return .extraExtraLarge
-        case .xxxLarge: return .extraExtraExtraLarge
-        case .accessibility1: return .accessibilityMedium
-        case .accessibility2: return .accessibilityLarge
-        case .accessibility3: return .accessibilityExtraLarge
-        case .accessibility4: return .accessibilityExtraExtraLarge
-        case .accessibility5: return .accessibilityExtraExtraExtraLarge
-        @unknown default: return .large
         }
     }
 }

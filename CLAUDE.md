@@ -29,6 +29,15 @@ new files in a referenced directory -- it lists each file explicitly in
 the `.pbxproj`, so skipping regeneration after adding a file means it
 silently won't be compiled.
 
+**If you're an agent working somewhere without XcodeGen** (the Linux
+container Claude Code on the web runs in has no Swift toolchain, so no
+`xcodegen` and no `xcodebuild`), the safe move is to add new types and
+new test suites to *existing* files in the right group rather than
+creating new ones -- a new file you can't register is a file that
+silently doesn't compile, and hand-editing the `.pbxproj` to register it
+is both forbidden above and unverifiable from there. Say so in the PR so
+whoever's on a Mac can split things out and regenerate if they'd rather.
+
 ## Building and testing
 
 ```
@@ -258,6 +267,19 @@ author's own checkout), here's what differs:
   `UIScrollView` that gets re-parented repeatedly and frames leave nothing
   behind on the way out. Don't "simplify" this back into returning the
   terminal itself.
+- **Assigning `SwiftTerm.TerminalView.font` is never free, so don't do it
+  unconditionally.** Its setter (checked against the pinned 1.14.0)
+  rebuilds the bold/italic font variants, calls `resetFont()` -- which
+  recomputes the cell grid and *resizes the terminal*, so a window-change
+  request goes out to the remote -- and then calls `selectNone()`.
+  `TerminalHostView.updateUIView` re-applied the font on every SwiftUI
+  update (a status banner appearing, a theme change, a re-adopted
+  container), which meant an unrelated re-render could drop a selection
+  the user was in the middle of making. The assignment now lives in one
+  place (`TerminalSessionController.setFont(baseSize:)`) behind a guard on
+  the last-applied *scaled size* -- deliberately not on `UIFont`
+  equality, so it doesn't depend on how UIKit vends or compares font
+  objects.
 - **`UIScreen.main.bounds.width` captured once, in a view that outlives
   every rotation.** `TerminalAccessoryView`'s initial frame width was read
   at `TerminalSessionController` init and never updated, so the accessory
