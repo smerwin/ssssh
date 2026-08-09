@@ -110,10 +110,18 @@ MIT-licensed; their required notices are preserved in [NOTICE.md](NOTICE.md).
 - Visual theme: green or amber phosphor CRT looks (both with the subtle
   `ScanlineOverlay`) plus a plain high-contrast alternative, toggled from
   the Settings tab and persisted via `@AppStorage`.
+- Text size: pinch the terminal to zoom in or out, or drag the **Terminal
+  Text Size** slider in Settings (with a live preview) -- both write the
+  same app-wide setting, so they can't disagree. Whatever's chosen scales
+  on top of the system text size from Settings > Accessibility > Display &
+  Text Size, which the terminal follows out of the box, so the default
+  needs no adjusting at all for most people.
 - Swipe down on the terminal to page up through scrollback (or send a real
   page-up keystroke to full-screen apps like `vim`/`less`); swipe up to
-  page back down toward the live output. The keyboard's own show/hide is a
-  toolbar button instead, next to the terminal's title.
+  page back down toward the live output. Pinching to zoom takes over
+  two-finger scrolling; one-finger drag-to-scroll is unaffected. The
+  keyboard's own show/hide is a toolbar button instead, next to the
+  terminal's title.
 - Copy/paste and OSC 52 clipboard support come from SwiftTerm's built-in
   defaults, not custom code; rectangular selection isn't implemented.
 - Sessions persist independent of navigation: `SessionManager` keeps one

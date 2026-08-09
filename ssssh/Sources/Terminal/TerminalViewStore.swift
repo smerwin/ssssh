@@ -1,5 +1,6 @@
 import SwiftUI
 import SwiftTerm
+import UIKit
 
 /// Owns the live wiring between one `SSHConnection` and its `SwiftTerm.TerminalView`
 /// for as long as the session is open, independent of whether a `TerminalSessionView`
@@ -9,7 +10,24 @@ import SwiftTerm
 final class TerminalSessionController: NSObject, TerminalViewDelegate {
     let view: SwiftTerm.TerminalView
     private weak var connection: SSHConnection?
-    private var swipeDelegate: SwipeSimultaneousRecognitionDelegate?
+    private var simultaneousDelegate: ScrollPanSimultaneousRecognitionDelegate?
+    /// The base (pre-Dynamic-Type) text size currently applied to `view`.
+    /// Seeded from the persisted setting rather than from
+    /// `TerminalFontSize.standard` so a pinch is scaling from the real
+    /// current size even in the (theoretical) case of one landing before
+    /// SwiftUI's first `applyFont(baseSize:contentSizeCategory:)`.
+    private(set) var baseFontSize = UserDefaults.standard.terminalFontSize
+    /// The content size category last handed down from SwiftUI, kept so a
+    /// pinch can rebuild the scaled font without needing the environment.
+    private var contentSizeCategory: UIContentSizeCategory = .large
+    /// The base size the in-flight pinch started from; `nil` whenever no
+    /// pinch is in progress.
+    private var pinchStartFontSize: Double?
+    /// The scaled (post-Dynamic-Type) size last handed to SwiftTerm, so a
+    /// redundant re-apply can be skipped -- see `setFont(baseSize:)`. `nil`
+    /// until the first one, since SwiftTerm starts on its own 12pt default
+    /// rather than on anything this app chose.
+    private var appliedScaledSize: Double?
     /// Predictive local echo, active only while `connection.isUsingMosh`
     /// -- see `MoshPredictionEngine`'s doc comment. Always present (rather
     /// than created/torn down with the Mosh upgrade) since it's a no-op
@@ -53,18 +71,110 @@ final class TerminalSessionController: NSObject, TerminalViewDelegate {
         // recognition against SwiftTerm's own double-tap and selection-pan
         // gestures too, which let a swipe steal touches from word-select
         // and left stray highlighting behind after paging.
-        let swipeDelegate = SwipeSimultaneousRecognitionDelegate(scrollPanGesture: view.panGestureRecognizer)
-        self.swipeDelegate = swipeDelegate
+        let simultaneousDelegate = ScrollPanSimultaneousRecognitionDelegate(scrollPanGesture: view.panGestureRecognizer)
+        self.simultaneousDelegate = simultaneousDelegate
 
         let swipeDown = UISwipeGestureRecognizer(target: self, action: #selector(handlePageUp))
         swipeDown.direction = .down
-        swipeDown.delegate = swipeDelegate
+        swipeDown.delegate = simultaneousDelegate
         view.addGestureRecognizer(swipeDown)
 
         let swipeUp = UISwipeGestureRecognizer(target: self, action: #selector(handlePageDown))
         swipeUp.direction = .up
-        swipeUp.delegate = swipeDelegate
+        swipeUp.delegate = simultaneousDelegate
         view.addGestureRecognizer(swipeUp)
+
+        // Pinch to resize the terminal's text, the same gesture every other
+        // iOS text surface uses for it. `TerminalView` is a `UIScrollView`,
+        // but SwiftTerm never gives it a zoom-scale range (nothing in
+        // `iOSTerminalView.swift` touches `minimumZoomScale`/
+        // `maximumZoomScale`/`viewForZooming`, checked against the pinned
+        // 1.14.0), so UIScrollView's own pinch recognizer is inert and this
+        // isn't competing with anything built in.
+        //
+        // The scroll pan is capped at a single touch so a two-finger pinch
+        // can't drag the scrollback out from under the gesture at the same
+        // time: two-finger scrolling is deliberately given up for zooming
+        // (one-finger drag-to-scroll and the swipe gestures above are both
+        // untouched by this). The simultaneous-recognition delegate still
+        // matters for the reverse order: a one-finger drag that's already
+        // scrolling when a second finger lands would otherwise block the
+        // pinch from ever starting.
+        view.panGestureRecognizer.maximumNumberOfTouches = 1
+        let pinch = UIPinchGestureRecognizer(target: self, action: #selector(handlePinch))
+        pinch.delegate = simultaneousDelegate
+        view.addGestureRecognizer(pinch)
+    }
+
+    /// Applies `baseSize`, scaled for `contentSizeCategory`, to the terminal.
+    /// Driven by SwiftUI (`TerminalHostView.updateUIView`) whenever the
+    /// stored size or the system text size changes.
+    ///
+    /// Deliberately a no-op while a pinch is in flight: SwiftUI re-runs
+    /// `updateUIView` for reasons that have nothing to do with text size (a
+    /// status banner appearing, a theme change, a re-adopted container), and
+    /// letting one of those land mid-gesture would snap the font back to the
+    /// persisted size under the user's fingers.
+    @MainActor func applyFont(baseSize: Double, contentSizeCategory: UIContentSizeCategory) {
+        guard pinchStartFontSize == nil else { return }
+        self.contentSizeCategory = contentSizeCategory
+        setFont(baseSize: baseSize)
+    }
+
+    /// The pinch handler's own math, factored out so it can be exercised
+    /// without synthesizing a `UIPinchGestureRecognizer` (whose `state` and
+    /// `scale` can't be driven from a test).
+    @MainActor func applyPinch(scale: Double, from startSize: Double) {
+        setFont(baseSize: TerminalFontSize.snapped(startSize * scale))
+    }
+
+    /// The single place `view.font` is assigned.
+    ///
+    /// The assignment is guarded on the rendered size actually changing
+    /// because SwiftTerm's `font` setter does real work every single time:
+    /// it rebuilds the bold/italic variants, recomputes the cell grid
+    /// (`resetFont()`, which resizes the terminal and so sends a
+    /// window-change request to the remote), and calls `selectNone()`.
+    /// Unguarded -- which is what this path used to be -- an unrelated
+    /// SwiftUI update was enough to drop a selection the user was in the
+    /// middle of making.
+    ///
+    /// The guard compares the size we last applied rather than the
+    /// `UIFont`s themselves, so it depends on nothing about how UIKit
+    /// vends or compares font objects.
+    @MainActor private func setFont(baseSize: Double) {
+        let clamped = TerminalFontSize.clamped(baseSize)
+        baseFontSize = clamped
+        let scaled = TerminalFontSize.scaledSize(baseSize: clamped, contentSizeCategory: contentSizeCategory)
+        guard scaled != appliedScaledSize else { return }
+        appliedScaledSize = scaled
+        view.font = TerminalFontSize.scaledFont(baseSize: clamped, contentSizeCategory: contentSizeCategory)
+    }
+
+    @objc @MainActor private func handlePinch(_ gesture: UIPinchGestureRecognizer) {
+        switch gesture.state {
+        case .began:
+            // Scaling from the size the gesture started at (rather than
+            // resetting `gesture.scale` each update) keeps a pinch that goes
+            // out and back landing exactly where it began.
+            pinchStartFontSize = baseFontSize
+        case .changed:
+            guard let start = pinchStartFontSize else { return }
+            applyPinch(scale: Double(gesture.scale), from: start)
+        case .ended, .cancelled, .failed:
+            guard pinchStartFontSize != nil else { return }
+            pinchStartFontSize = nil
+            // Persisted once the gesture settles rather than on every
+            // `.changed`: this is the app-wide terminal text size (the
+            // Settings slider reads and writes the same key), so writing it
+            // continuously would churn `UserDefaults` -- and, through
+            // `@AppStorage`, re-render every view observing it -- dozens of
+            // times per pinch. A cancelled or failed gesture still persists,
+            // since whatever it last applied is what's on screen.
+            UserDefaults.standard.set(baseFontSize, forKey: AppSettingsKeys.terminalFontSize)
+        default:
+            break
+        }
     }
 
     @objc @MainActor private func handlePageUp() {
@@ -143,12 +253,17 @@ final class TerminalSessionController: NSObject, TerminalViewDelegate {
     func rangeChanged(source: SwiftTerm.TerminalView, startY: Int, endY: Int) {}
 }
 
+/// Lets the terminal's added gestures (scrollback swipes, pinch-to-zoom) run
+/// alongside the scroll view's own pan -- and *only* that one, so a swipe or a
+/// pinch never steals touches from SwiftTerm's own double-tap and
+/// selection-pan gestures.
+///
 /// Kept separate from `TerminalSessionController` because conforming a single class to
 /// both `UIGestureRecognizerDelegate` and SwiftTerm's `TerminalViewDelegate` makes the
 /// compiler infer the whole type as main-actor-isolated, which then conflicts with
 /// `TerminalViewDelegate`'s nonisolated requirements ("conformance ... crosses into main
 /// actor-isolated code"). A standalone delegate object sidesteps that entirely.
-private final class SwipeSimultaneousRecognitionDelegate: NSObject, UIGestureRecognizerDelegate {
+private final class ScrollPanSimultaneousRecognitionDelegate: NSObject, UIGestureRecognizerDelegate {
     private weak var scrollPanGesture: UIPanGestureRecognizer?
 
     init(scrollPanGesture: UIPanGestureRecognizer) {

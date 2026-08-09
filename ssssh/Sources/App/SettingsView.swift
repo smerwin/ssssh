@@ -3,7 +3,9 @@ import SwiftUI
 struct SettingsView: View {
     @Environment(PurchaseManager.self) private var purchaseManager
     @Environment(\.colorSchemeContrast) private var colorSchemeContrast
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @AppStorage(AppSettingsKeys.terminalTheme) private var themeRawValue = TerminalTheme.crtGreen.rawValue
+    @AppStorage(AppSettingsKeys.terminalFontSize) private var terminalFontSize = TerminalFontSize.standard
     @AppStorage(AppSettingsKeys.autoReconnect) private var autoReconnect = true
     @AppStorage(AppSettingsKeys.verboseConnecting) private var verboseConnecting = true
     @AppStorage(AppSettingsKeys.autoUpgradeToMosh) private var autoUpgradeToMosh = false
@@ -48,6 +50,44 @@ struct SettingsView: View {
                     }
                 }
                 Section {
+                    // Rendered in exactly the font the terminal itself will
+                    // use -- same base size, same Dynamic Type scaling, same
+                    // theme colors -- so the slider's effect is visible
+                    // without leaving Settings to go find a session.
+                    Text(Self.sampleTerminalLine)
+                        .font(.system(size: CGFloat(previewFontSize), design: .monospaced))
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                        .foregroundStyle(previewTheme.foreground)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(8)
+                        .background(previewTheme.background, in: RoundedRectangle(cornerRadius: 6))
+                        .accessibilityHidden(true)
+                    Slider(
+                        value: $terminalFontSize,
+                        in: TerminalFontSize.minimum...TerminalFontSize.maximum,
+                        step: TerminalFontSize.step
+                    ) {
+                        Text("Text Size")
+                    } minimumValueLabel: {
+                        Text("A").font(.footnote)
+                    } maximumValueLabel: {
+                        Text("A").font(.title2)
+                    }
+                    // Without this VoiceOver announces a bare number ("18")
+                    // for a value whose whole meaning is its unit.
+                    .accessibilityValue(TerminalFontSize.description(of: terminalFontSize))
+                    LabeledContent("Size", value: TerminalFontSize.description(of: terminalFontSize))
+                    Button("Reset to Default") {
+                        terminalFontSize = TerminalFontSize.standard
+                    }
+                    .disabled(terminalFontSize == TerminalFontSize.standard)
+                } header: {
+                    Text("Terminal Text Size")
+                } footer: {
+                    Text("Pinch to zoom in the terminal to change this from there too -- it's the same setting either way. Text also scales with the system text size from Settings > Accessibility > Display & Text Size, so this moves up or down from whatever that's set to.")
+                }
+                Section {
                     Toggle("Auto-Reconnect", isOn: $autoReconnect)
                 } footer: {
                     Text("When a session drops unexpectedly, automatically reconnect it. When off, dropped sessions are closed instead.")
@@ -86,6 +126,22 @@ struct SettingsView: View {
                 PaywallView()
             }
         }
+    }
+
+    /// Short enough to stay on one line at the largest supported size on a
+    /// phone, and recognizably a shell prompt rather than lorem ipsum.
+    private static let sampleTerminalLine = "user@host:~$ ls -la"
+
+    private var previewTheme: TerminalTheme {
+        TerminalTheme.resolved(rawValue: themeRawValue, increasedContrast: colorSchemeContrast == .increased)
+    }
+
+    /// The size the terminal will actually render at: the slider's base size
+    /// with Dynamic Type applied, exactly as `TerminalSessionController` does
+    /// it. `Font.system(size:)` is a fixed size that SwiftUI won't scale on
+    /// its own, so applying the scaling here doesn't double up.
+    private var previewFontSize: Double {
+        TerminalFontSize.scaledSize(baseSize: terminalFontSize, contentSizeCategory: dynamicTypeSize.uiContentSizeCategory)
     }
 }
 

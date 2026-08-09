@@ -52,6 +52,113 @@ struct TerminalViewStoreTests {
 }
 
 @MainActor
+struct TerminalSessionControllerFontTests {
+    private func makeController() -> TerminalSessionController {
+        let connection = SSHConnection(host: SSHHost(nickname: "test", hostname: "example.com", username: "me"))
+        return TerminalViewStore().controller(for: connection)
+    }
+
+    @Test func applyingABaseSizeScalesTheTerminalFont() {
+        let controller = makeController()
+
+        controller.applyFont(baseSize: 20, contentSizeCategory: .large)
+
+        #expect(controller.baseFontSize == 20)
+        #expect(controller.view.font.pointSize == CGFloat(TerminalFontSize.scaledSize(baseSize: 20, contentSizeCategory: .large)))
+    }
+
+    /// The system text size still reaches the terminal after the base size
+    /// became user-adjustable -- the two compose, they don't replace each
+    /// other.
+    @Test func theSystemTextSizeStillScalesTheChosenBaseSize() {
+        let controller = makeController()
+
+        controller.applyFont(baseSize: 14, contentSizeCategory: .large)
+        let atDefaultCategory = controller.view.font.pointSize
+
+        controller.applyFont(baseSize: 14, contentSizeCategory: .accessibilityExtraExtraExtraLarge)
+
+        #expect(controller.view.font.pointSize > atDefaultCategory)
+        // The *base* size is what the slider and pinch deal in, so it must
+        // not absorb the system's scaling factor.
+        #expect(controller.baseFontSize == 14)
+    }
+
+    /// A pinch scales from the size the gesture started at rather than from
+    /// whatever the last `.changed` update left behind, so pinching out and
+    /// back lands exactly where it began.
+    @Test func pinchingScalesFromTheGestureStartSize() {
+        let controller = makeController()
+        controller.applyFont(baseSize: 10, contentSizeCategory: .large)
+
+        controller.applyPinch(scale: 1.5, from: 10)
+        #expect(controller.baseFontSize == 15)
+
+        controller.applyPinch(scale: 1.2, from: 10)
+        #expect(controller.baseFontSize == 12)
+
+        controller.applyPinch(scale: 1.0, from: 10)
+        #expect(controller.baseFontSize == 10)
+    }
+
+    @Test func pinchingSnapsToTheHalfPointStep() {
+        let controller = makeController()
+
+        controller.applyPinch(scale: 1.234_5, from: 14)
+
+        // 14 * 1.2345 == 17.283, which lands on 17.5 rather than being
+        // persisted as-is.
+        #expect(controller.baseFontSize == 17.5)
+    }
+
+    /// An enthusiastic pinch can't leave the terminal at a size there's no
+    /// way to pinch back out of.
+    @Test func pinchingStopsAtTheSupportedRange() {
+        let controller = makeController()
+
+        controller.applyPinch(scale: 100, from: 14)
+        #expect(controller.baseFontSize == TerminalFontSize.maximum)
+
+        controller.applyPinch(scale: 0.001, from: 14)
+        #expect(controller.baseFontSize == TerminalFontSize.minimum)
+    }
+
+    /// SwiftTerm's `font` setter rebuilds its font variants, recomputes the
+    /// cell grid (resizing the remote PTY with it) and calls `selectNone()`
+    /// on every assignment -- so re-applying the size SwiftUI already
+    /// applied, which `updateUIView` does constantly, has to leave the
+    /// existing font object alone rather than replacing it with an equal one.
+    @Test func reapplyingTheSameSizeLeavesALiveSelectionAlone() {
+        let controller = makeController()
+        controller.applyFont(baseSize: 18, contentSizeCategory: .large)
+        controller.view.feed(text: "hello world\r\n")
+        controller.view.selectAll()
+        #expect(controller.view.selectionActive)
+
+        // The no-op case `updateUIView` hits constantly.
+        controller.applyFont(baseSize: 18, contentSizeCategory: .large)
+
+        #expect(controller.view.selectionActive)
+    }
+
+    /// The contrast to the test above, and the reason it can't just always
+    /// assign: a *real* size change genuinely does go through SwiftTerm's
+    /// `font` setter, which drops the selection along with recomputing the
+    /// cell grid.
+    @Test func changingTheSizeDoesGoThroughSwiftTermsFontSetter() {
+        let controller = makeController()
+        controller.applyFont(baseSize: 18, contentSizeCategory: .large)
+        controller.view.feed(text: "hello world\r\n")
+        controller.view.selectAll()
+
+        controller.applyFont(baseSize: 24, contentSizeCategory: .large)
+
+        #expect(!controller.view.selectionActive)
+        #expect(controller.view.font.pointSize == CGFloat(TerminalFontSize.scaledSize(baseSize: 24, contentSizeCategory: .large)))
+    }
+}
+
+@MainActor
 struct TerminalContainerViewTests {
     /// Pushing the same session's terminal a second time (or pushing it
     /// from the Sessions tab after first opening it from Hosts) re-parents
